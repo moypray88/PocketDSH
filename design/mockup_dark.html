@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>PocketDSH · 深空指挥舱</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 2304px; height: 1440px; overflow: hidden; }
+  body {
+    font-family: -apple-system, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif;
+    color: #ECF0FB;
+    background:
+      radial-gradient(1600px 900px at 78% -10%, rgba(139,92,246,.16), transparent 60%),
+      radial-gradient(1400px 800px at 8% 110%, rgba(34,211,238,.12), transparent 55%),
+      linear-gradient(135deg, #06090F 0%, #0C1124 46%, #150F30 100%);
+    display: flex;
+  }
+  /* 星点层 */
+  .stars { position: absolute; inset: 0; pointer-events: none; opacity: .5;
+    background-image:
+      radial-gradient(1.5px 1.5px at 120px 200px, rgba(255,255,255,.5), transparent),
+      radial-gradient(1px 1px at 480px 90px, rgba(255,255,255,.4), transparent),
+      radial-gradient(1.5px 1.5px at 900px 320px, rgba(255,255,255,.35), transparent),
+      radial-gradient(1px 1px at 1400px 140px, rgba(255,255,255,.45), transparent),
+      radial-gradient(1.5px 1.5px at 1900px 420px, rgba(255,255,255,.3), transparent),
+      radial-gradient(1px 1px at 2150px 260px, rgba(255,255,255,.4), transparent),
+      radial-gradient(1px 1px at 300px 1200px, rgba(255,255,255,.3), transparent),
+      radial-gradient(1.5px 1.5px at 1750px 1150px, rgba(255,255,255,.35), transparent);
+  }
+
+  /* ───────── 左侧导航栏 ───────── */
+  .rail {
+    width: 264px; height: 100%;
+    display: flex; flex-direction: column;
+    background: rgba(10, 14, 28, .55);
+    border-right: 1px solid rgba(255,255,255,.08);
+    backdrop-filter: blur(24px);
+    padding: 40px 20px 28px;
+    position: relative; z-index: 2;
+  }
+  .logo { display: flex; align-items: center; gap: 14px; padding: 0 12px 36px; }
+  .logo-mark {
+    width: 52px; height: 52px; border-radius: 16px;
+    background: linear-gradient(135deg, #22D3EE, #8B5CF6);
+    display: grid; place-items: center;
+    box-shadow: 0 0 28px rgba(34,211,238,.45);
+  }
+  .logo-name { font-size: 24px; font-weight: 700; letter-spacing: .5px; }
+  .logo-name em { font-style: normal; color: #22D3EE; }
+  .nav-item {
+    display: flex; align-items: center; gap: 16px;
+    height: 60px; padding: 0 16px; margin-bottom: 8px;
+    border-radius: 16px; font-size: 19px; color: #97A1C0;
+    position: relative;
+  }
+  .nav-item svg { width: 24px; height: 24px; }
+  .nav-item.active {
+    color: #FFF; background: linear-gradient(90deg, rgba(34,211,238,.18), rgba(139,92,246,.14));
+    border: 1px solid rgba(34,211,238,.35);
+    box-shadow: inset 0 0 22px rgba(34,211,238,.10);
+  }
+  .nav-item.active::before {
+    content: ""; position: absolute; left: -20px; top: 14px; bottom: 14px; width: 4px;
+    border-radius: 4px; background: linear-gradient(#22D3EE, #8B5CF6);
+    box-shadow: 0 0 12px rgba(34,211,238,.8);
+  }
+  .rail-foot { margin-top: auto; padding: 16px 12px 0; border-top: 1px solid rgba(255,255,255,.08); }
+  .conn { display: flex; align-items: center; gap: 10px; font-size: 15px; color: #7FE8D6; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #34D399; box-shadow: 0 0 12px #34D399; }
+  .ver { font-size: 13px; color: #5A6485; margin-top: 8px; }
+
+  /* ───────── 主区 ───────── */
+  .main { flex: 1; padding: 44px 48px 40px; display: flex; gap: 36px; position: relative; z-index: 1; }
+  .col-a { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 28px; }
+  .col-b { width: 560px; display: flex; flex-direction: column; gap: 28px; }
+
+  .pagehead { display: flex; align-items: flex-end; justify-content: space-between; }
+  .pagehead h1 { font-size: 42px; font-weight: 700; letter-spacing: 1px; }
+  .pagehead .sub { margin-top: 8px; font-size: 17px; color: #8C96B4; }
+  .head-right { display: flex; align-items: center; gap: 16px; }
+  .icon-btn {
+    width: 52px; height: 52px; border-radius: 16px; display: grid; place-items: center;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); color: #C6CDE6;
+  }
+  .user-chip {
+    display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 20px 0 8px;
+    border-radius: 26px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+    font-size: 17px;
+  }
+  .avatar { width: 38px; height: 38px; border-radius: 50%; background: linear-gradient(135deg,#8B5CF6,#22D3EE); display:grid; place-items:center; font-weight:700; font-size:16px; color:#06090F; }
+
+  /* 状态英雄卡 */
+  .hero {
+    border-radius: 28px; padding: 36px 40px;
+    background: linear-gradient(160deg, rgba(255,255,255,.075), rgba(255,255,255,.03));
+    border: 1px solid rgba(255,255,255,.14);
+    backdrop-filter: blur(20px);
+    position: relative; overflow: hidden;
+    display: flex; justify-content: space-between; gap: 40px;
+  }
+  .hero::before {
+    content:""; position:absolute; top:-120px; right:-80px; width:420px; height:420px; border-radius:50%;
+    background: radial-gradient(circle, rgba(34,211,238,.22), transparent 65%);
+  }
+  .hero-left { min-width: 0; }
+  .hero-top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .hero-host { font-size: 26px; font-weight: 700; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px;
+    border-radius: 17px; font-size: 15px;
+    background: rgba(52,211,153,.12); color: #7CF3CE; border: 1px solid rgba(52,211,153,.35);
+  }
+  .badge .dot { background: #34D399; }
+  .badge.warn { background: rgba(251,191,36,.10); color: #FDE68A; border-color: rgba(251,191,36,.35); }
+  .badge.warn .dot { background: #FBBF24; box-shadow: 0 0 10px #FBBF24; }
+  .metrics { display: flex; gap: 56px; margin-top: 34px; }
+  .metric .k { font-size: 15px; color: #8C96B4; margin-bottom: 8px; }
+  .metric .v { font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .metric .v small { font-size: 18px; font-weight: 500; color: #8C96B4; margin-left: 4px; }
+  .v.good { color: #22D3EE; text-shadow: 0 0 24px rgba(34,211,238,.45); }
+  .hero-right { width: 330px; display: flex; flex-direction: column; justify-content: center; gap: 22px; position: relative; }
+  .ttl-label { display: flex; justify-content: space-between; font-size: 15px; color: #8C96B4; }
+  .ttl-label b { color: #FDE68A; font-weight: 600; }
+  .bar { height: 10px; border-radius: 6px; background: rgba(255,255,255,.10); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 71%; border-radius: 6px;
+    background: linear-gradient(90deg, #22D3EE, #8B5CF6);
+    box-shadow: 0 0 14px rgba(34,211,238,.6); }
+  .cta {
+    height: 62px; border-radius: 18px; display: flex; align-items: center; justify-content: center; gap: 12px;
+    font-size: 21px; font-weight: 700; color: #04121C;
+    background: linear-gradient(135deg, #2FE3FF, #7C5CFF);
+    box-shadow: 0 14px 36px rgba(34,211,238,.35);
+  }
+  .hint { font-size: 13.5px; color: #6C7799; text-align: center; }
+
+  /* 分区标题 */
+  .sec { display: flex; align-items: center; gap: 12px; font-size: 20px; font-weight: 600; color: #C9D2EE; }
+  .sec::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, rgba(255,255,255,.14), transparent); }
+  .sec .more { font-size: 15px; color: #22D3EE; font-weight: 500; }
+
+  /* 快捷任务 */
+  .tasks { display: grid; grid-template-columns: repeat(5, 1fr); gap: 20px; }
+  .task {
+    height: 132px; border-radius: 22px; padding: 20px;
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.10);
+    display: flex; flex-direction: column; justify-content: space-between;
+    transition: .2s;
+  }
+  .task .ic { width: 44px; height: 44px; border-radius: 13px; display: grid; place-items: center;
+    background: linear-gradient(135deg, rgba(34,211,238,.2), rgba(139,92,246,.2)); color: #7FE3F7; }
+  .task .nm { font-size: 17px; font-weight: 600; }
+  .task .st { font-size: 13px; color: #8C96B4; }
+  .task .st.ok { color: #7CF3CE; }
+  .task.add { border-style: dashed; border-color: rgba(255,255,255,.22); align-items: center; justify-content: center; gap: 10px; color: #8C96B4; }
+  .task.add .plus { font-size: 34px; font-weight: 300; color: #22D3EE; }
+
+  /* 会话列表 */
+  .sessions { border-radius: 24px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.10); overflow: hidden; }
+  .sess { display: flex; align-items: center; gap: 18px; padding: 22px 26px; border-bottom: 1px solid rgba(255,255,255,.07); }
+  .sess:last-child { border-bottom: none; }
+  .sess .sic { width: 42px; height: 42px; border-radius: 12px; display:grid; place-items:center; background: rgba(139,92,246,.18); color:#C4B5FD; }
+  .sess .body { flex: 1; min-width: 0; }
+  .sess .t { font-size: 18px; font-weight: 600; }
+  .sess .d { font-size: 14px; color: #8C96B4; margin-top: 4px; }
+  .pill { font-size: 14px; padding: 7px 14px; border-radius: 999px; white-space: nowrap; }
+  .pill.run { background: rgba(34,211,238,.12); color: #7FE3F7; border: 1px solid rgba(34,211,238,.35); }
+  .pill.done { background: rgba(52,211,153,.10); color: #7CF3CE; border: 1px solid rgba(52,211,153,.30); }
+  .pill.queue { background: rgba(255,255,255,.07); color: #97A1C0; border: 1px solid rgba(255,255,255,.14); }
+
+  /* ───────── 右列：工作台预览 ───────── */
+  .wb { border-radius: 26px; overflow: hidden; border: 1px solid rgba(255,255,255,.13);
+    background: rgba(8,12,24,.72); backdrop-filter: blur(18px); flex: 1; display: flex; flex-direction: column; }
+  .wb-chrome { display: flex; align-items: center; gap: 14px; padding: 16px 20px; background: rgba(255,255,255,.05); border-bottom: 1px solid rgba(255,255,255,.08); }
+  .wdots { display: flex; gap: 8px; }
+  .wdots i { width: 12px; height: 12px; border-radius: 50%; }
+  .wdots i:nth-child(1){background:#FF5F57;} .wdots i:nth-child(2){background:#FEBC2E;} .wdots i:nth-child(3){background:#28C840;}
+  .urlbar { flex: 1; height: 36px; border-radius: 10px; background: rgba(255,255,255,.07);
+    display: flex; align-items: center; gap: 10px; padding: 0 14px; font-size: 14.5px; color: #9BE8F5;
+    border: 1px solid rgba(34,211,238,.28); }
+  .urlbar svg { width: 15px; height: 15px; color: #34D399; }
+  .wb-tag { font-size: 12.5px; color: #0A1420; background: linear-gradient(135deg,#2FE3FF,#7C5CFF); border-radius: 8px; padding: 5px 10px; font-weight: 700; }
+  .wb-body { flex: 1; padding: 22px 24px; display: flex; flex-direction: column; gap: 16px; font-size: 15px; }
+  .msg { max-width: 88%; padding: 14px 18px; border-radius: 16px; line-height: 1.55; }
+  .msg.user { align-self: flex-end; background: linear-gradient(135deg, rgba(34,211,238,.22), rgba(139,92,246,.22)); border: 1px solid rgba(34,211,238,.30); border-bottom-right-radius: 6px; }
+  .msg.ai { align-self: flex-start; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.10); border-bottom-left-radius: 6px; }
+  .msg .who { font-size: 12px; color: #8C96B4; margin-bottom: 6px; }
+  .msg.ai .who { color: #7FE3F7; }
+  .term {
+    border-radius: 14px; background: #05070D; border: 1px solid rgba(34,211,238,.22);
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 13.5px; line-height: 1.75;
+    padding: 14px 18px; color: #A8E6F3;
+  }
+  .term .g { color: #34D399; } .term .c { color: #5A6485; } .term .y { color: #FDE68A; }
+  .wb-input { display: flex; gap: 12px; padding: 16px 20px; border-top: 1px solid rgba(255,255,255,.08); }
+  .wb-input .box { flex: 1; height: 46px; border-radius: 13px; background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.12); display: flex; align-items: center; padding: 0 16px; color: #6C7799; font-size: 15px; }
+  .wb-input .send { width: 46px; height: 46px; border-radius: 13px; display: grid; place-items: center;
+    background: linear-gradient(135deg,#2FE3FF,#7C5CFF); color: #04121C; }
+
+  /* 外屏小样 */
+  .cover-wrap { display: flex; gap: 22px; align-items: stretch; }
+  .cover {
+    width: 288px; border-radius: 34px; border: 3px solid rgba(255,255,255,.14);
+    background: linear-gradient(180deg, #0A0F1E, #0E1128); padding: 20px 16px 14px;
+    display: flex; flex-direction: column; box-shadow: 0 24px 60px rgba(0,0,0,.5);
+  }
+  .cover .cap { font-size: 12.5px; color: #6C7799; text-align: center; }
+  .cv-status { border-radius: 18px; padding: 16px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); margin-top: 12px; }
+  .cv-status .h { display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
+  .cv-status .h b { color: #7CF3CE; font-weight: 600; }
+  .cv-mini { margin-top: 10px; font-size: 12px; color: #8C96B4; line-height: 1.8; }
+  .cv-task { margin-top: 12px; border-radius: 14px; padding: 12px 14px; background: rgba(34,211,238,.10); border: 1px solid rgba(34,211,238,.28); font-size: 13px; color: #9BE8F5; display: flex; gap: 8px; align-items: center; }
+  .cv-tabs { margin-top: auto; display: flex; justify-content: space-around; padding-top: 12px; }
+  .cv-tab { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 11.5px; color: #66708F; }
+  .cv-tab.on { color: #22D3EE; }
+  .cv-tab svg { width: 22px; height: 22px; }
+  .cover-note { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 14px; font-size: 15.5px; color: #97A1C0; line-height: 1.7; padding-right: 8px; }
+  .cover-note b { color: #ECF0FB; }
+  .kn { display: inline-flex; align-items: center; gap: 8px; }
+  .kn i { width: 8px; height: 8px; border-radius: 50%; background: #22D3EE; box-shadow: 0 0 10px #22D3EE; }
+</style>
+</head>
+<body>
+<div class="stars"></div>
+
+<!-- 导航栏 -->
+<nav class="rail">
+  <div class="logo">
+    <div class="logo-mark">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#04121C" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2 L20.5 7 V17 L12 22 L3.5 17 V7 Z"/><path d="M12 22 V12 M12 12 L20.5 7 M12 12 L3.5 7"/>
+      </svg>
+    </div>
+    <div class="logo-name">Pocket<em>DSH</em></div>
+  </div>
+
+  <div class="nav-item">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+    控制台
+  </div>
+  <div class="nav-item active">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 L3 14 H11 L10 22 L21 9 H13 Z"/></svg>
+    连接中心
+  </div>
+  <div class="nav-item">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+    会话任务
+  </div>
+  <div class="nav-item">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+    终端
+  </div>
+  <div class="nav-item">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    设置
+  </div>
+
+  <div class="rail-foot">
+    <div class="conn"><span class="dot"></span> 已连接 · dsh.goldclew.com</div>
+    <div class="ver">PocketDSH v1.0.0 · 阔折叠专属适配</div>
+  </div>
+</nav>
+
+<!-- 主区 -->
+<main class="main">
+  <div class="col-a">
+    <div class="pagehead">
+      <div>
+        <h1>连接中心</h1>
+        <div class="sub">9月5日 星期六 · 一切运转正常</div>
+      </div>
+      <div class="head-right">
+        <div class="icon-btn">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </div>
+        <div class="user-chip"><span class="avatar">M</span> moypray</div>
+      </div>
+    </div>
+
+    <!-- 状态英雄卡 -->
+    <section class="hero">
+      <div class="hero-left">
+        <div class="hero-top">
+          <span class="hero-host">dsh.goldclew.com</span>
+          <span class="badge"><span class="dot"></span> 在线</span>
+          <span class="badge warn"><span class="dot"></span> 登录态 5 天后到期</span>
+        </div>
+        <div class="metrics">
+          <div class="metric"><div class="k">往返延迟</div><div class="v good">38<small>ms</small></div></div>
+          <div class="metric"><div class="k">持续在线</div><div class="v">12<small>天 6 小时</small></div></div>
+          <div class="metric"><div class="k">运行中会话</div><div class="v">3<small>个</small></div></div>
+          <div class="metric"><div class="k">今日任务</div><div class="v">9<small>项</small></div></div>
+        </div>
+      </div>
+      <div class="hero-right">
+        <div>
+          <div class="ttl-label"><span>dsh 登录态（Cookie 自动续期）</span><b>剩余 5 天</b></div>
+          <div class="bar" style="margin-top:10px"><i></i></div>
+        </div>
+        <div class="cta">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+          进入控制台
+        </div>
+        <div class="hint">免登录 · 自动注入凭据 · 全功能工作台</div>
+      </div>
+    </section>
+
+    <!-- 快捷任务 -->
+    <div class="sec">快捷任务 <span class="more">编辑 ›</span></div>
+    <div class="tasks">
+      <div class="task">
+        <div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></div>
+        <div><div class="nm">部署博客更新</div><div class="st ok">✓ 上次成功 · 今天 08:12</div></div>
+      </div>
+      <div class="task">
+        <div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z"/></svg></div>
+        <div><div class="nm">清理过期日志</div><div class="st">每晩 23:00 定时</div></div>
+      </div>
+      <div class="task">
+        <div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></div>
+        <div><div class="nm">重启 dsh 服务</div><div class="st">需要二次确认</div></div>
+      </div>
+      <div class="task">
+        <div class="ic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div>
+        <div><div class="nm">查看实时日志</div><div class="st">tail -f · 高亮告警</div></div>
+      </div>
+      <div class="task add"><span class="plus">+</span><span class="nm" style="color:#8C96B4">自定义任务</span></div>
+    </div>
+
+    <!-- 近期会话 -->
+    <div class="sec">近期任务会话 <span class="more">全部 ›</span></div>
+    <div class="sessions">
+      <div class="sess">
+        <div class="sic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 L3 14 H11 L10 22 L21 9 H13 Z"/></svg></div>
+        <div class="body"><div class="t">部署博客 v2.3 到生产环境</div><div class="d">构建 → 同步 → 健康检查 · 已执行 2 分 14 秒</div></div>
+        <span class="pill run">⟳ 运行中</span>
+      </div>
+      <div class="sess">
+        <div class="sic" style="background:rgba(52,211,153,.16);color:#7CF3CE"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>
+        <div class="body"><div class="t">每日数据库备份</div><div class="d">gzip 2.4GB → oss://backup · 用时 6 分 02 秒</div></div>
+        <span class="pill done">✓ 已完成</span>
+      </div>
+      <div class="sess">
+        <div class="sic" style="background:rgba(255,255,255,.08);color:#97A1C0"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+        <div class="body"><div class="t">依赖安全扫描</div><div class="d">排队中 · 预计 22:30 开始</div></div>
+        <span class="pill queue">○ 排队中</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 右列 -->
+  <div class="col-b">
+    <div class="sec" style="margin-top:6px">工作台预览 <span class="more">内嵌 dsh 官方控制台</span></div>
+    <div class="wb">
+      <div class="wb-chrome">
+        <div class="wdots"><i></i><i></i><i></i></div>
+        <div class="urlbar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          dsh.goldclew.com
+        </div>
+        <div class="wb-tag">已免登录</div>
+      </div>
+      <div class="wb-body">
+        <div class="msg user"><div class="who">你</div>把博客更新部署到生产环境，完成后跑一遍健康检查。</div>
+        <div class="msg ai"><div class="who">dsh · DeepSeek Harness</div>收到。正在执行部署流水线：</div>
+        <div class="term">
+          <div><span class="g">✓</span> npm run build <span class="c">(42s)</span></div>
+          <div><span class="g">✓</span> rsync → prod-server <span class="c">(128MB)</span></div>
+          <div><span class="y">▸</span> health-check --all <span class="c">…</span></div>
+        </div>
+        <div class="msg ai"><div class="who">dsh</div>健康检查进行中，5 个接口已通过 3 个，无异常。</div>
+      </div>
+      <div class="wb-input">
+        <div class="box">给 dsh 下达新任务…</div>
+        <div class="send"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg></div>
+      </div>
+    </div>
+
+    <!-- 外屏小样 -->
+    <div class="cover-wrap">
+      <div class="cover">
+        <div class="cap">外屏形态（合盖）</div>
+        <div class="cv-status">
+          <div class="h"><span>dsh.goldclew.com</span><b>● 在线</b></div>
+          <div class="cv-mini">延迟 38ms · 会话 3 · Cookie 剩 5 天</div>
+        </div>
+        <div class="cv-task">⟳ 部署博客 v2.3 · 2:14</div>
+        <div class="cv-tabs">
+          <div class="cv-tab on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>首页</div>
+          <div class="cv-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>任务</div>
+          <div class="cv-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>终端</div>
+          <div class="cv-tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>我的</div>
+        </div>
+      </div>
+      <div class="cover-note">
+        <div><b>阔折叠双态布局</b><br>展开态左侧导航栏 + 双列内容，视野最大化；合盖态自动切换底部 Tab 紧凑模式。</div>
+        <div class="kn"><i></i>断点自适应，无需手动切换</div>
+      </div>
+    </div>
+  </div>
+</main>
+</body>
+</html>

@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "PocketDSH - DeepSeek Harness remote console"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "PocketDSH main ability"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "PocketDSH"
+    },
+    {
+      "name": "internet_reason",
+      "value": "连接远程 dsh 服务器需要网络访问权限"
+    }
+  ]
+}

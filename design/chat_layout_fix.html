@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>对话区排版方案 · 对照稿</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 2000px; height: 1150px; overflow: hidden; }
+  body {
+    font-family: -apple-system, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif;
+    color: #ECF0FB;
+    background: linear-gradient(135deg, #06090F 0%, #0C1124 50%, #150F30 100%);
+    display: flex; padding: 40px;
+  }
+  .panel { flex: 1; display: flex; flex-direction: column; }
+  .panel-title { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+  .panel-sub { font-size: 13px; color: #8C96B4; margin-bottom: 18px; line-height: 1.6; }
+  .bad .panel-title { color: #F87171; }
+  .good .panel-title { color: #34D399; }
+
+  .phone {
+    width: 560px; height: 920px; border-radius: 30px; border: 2px solid rgba(255,255,255,.14);
+    background: #0A0F1E; overflow: hidden; display: flex; flex-direction: column; position: relative;
+  }
+  /* 对齐参考线 */
+  .guide { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1.5px dashed rgba(52,211,153,.55); z-index: 9; }
+  .guide-label { position: absolute; top: 6px; font-size: 10px; color: #34D399; background: rgba(52,211,153,.12);
+    padding: 2px 6px; border-radius: 4px; white-space: nowrap; z-index: 9; }
+
+  .p-head { height: 62px; display: flex; align-items: center; gap: 8px; padding: 0 10px;
+    border-bottom: 1px solid rgba(255,255,255,.10); }
+  .hbtn { width: 40px; height: 40px; border-radius: 12px; background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.12); display: grid; place-items: center; color: #22D3EE; font-size: 17px; }
+  .htitle { flex: 1; min-width: 0; }
+  .htitle .t { font-size: 15px; font-weight: 700; }
+  .htitle .s { font-size: 10.5px; color: #8C96B4; margin-top: 2px; }
+
+  .stream { flex: 1; padding: 12px 10px; overflow: hidden; }
+  .stream .row { display: flex; margin-bottom: 10px; }
+  .rail { width: 18px; display: flex; flex-direction: column; align-items: center; }
+  .rail .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 12px; }
+  .rail .ln { width: 1px; flex: 1; background: rgba(255,255,255,.14); margin-top: 3px; }
+  .body { flex: 1; min-width: 0; padding-left: 10px; }
+
+  .u-bubble { max-width: 86%; padding: 12px 16px; border-radius: 16px 16px 5px 16px;
+    background: rgba(34,211,238,.14); border: 1px solid rgba(34,211,238,.32);
+    font-size: 14px; line-height: 21px; margin-left: auto; }
+  .a-card { border-radius: 16px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.10); }
+  .a-tag { font-size: 10.5px; color: #7FE3F7; padding: 10px 0 0 0; }
+  .a-text { font-size: 14px; line-height: 22px; color: #ECF0FB; }
+  .think { margin-top: 8px; border-radius: 10px; background: rgba(255,255,255,.05);
+    border: 1px dashed rgba(139,92,246,.35); display: flex; align-items: center; gap: 8px; }
+  .think .ic { font-size: 13px; }
+  .think .lb { font-size: 12px; color: #97A1C0; flex: 1; }
+  .think .ex { font-size: 11px; color: #22D3EE; }
+  .tool { margin-top: 8px; border-radius: 12px; background: rgba(255,255,255,.05);
+    border: 1px solid rgba(255,255,255,.10); display: flex; align-items: center; gap: 9px; font-size: 12.5px; }
+  .tool .ok { margin-left: auto; color: #7CF3CE; }
+
+  .p-input { padding: 10px; border-top: 1px solid rgba(255,255,255,.10); display: flex; gap: 10px; }
+  .ibox { flex: 1; height: 46px; border-radius: 14px; background: rgba(255,255,255,.07);
+    border: 1px solid rgba(255,255,255,.12); display: flex; align-items: center; padding: 0 14px;
+    color: #6C7799; font-size: 13.5px; }
+  .ibtn { width: 46px; height: 46px; border-radius: 14px; background: rgba(255,255,255,.10);
+    display: grid; place-items: center; color: #5A6485; font-size: 17px; }
+
+  /* ── 现状问题样式（字贴边/挤压） ── */
+  .bad .think { padding: 5px 6px; }
+  .bad .tool { padding: 4px 6px; }
+  .bad .a-card { padding: 6px; }
+  .bad .a-tag { padding: 2px 0 0 2px; }
+  .bad .a-text { padding-left: 2px; }
+  .bad .u-bubble { padding: 6px 8px; line-height: 18px; }
+  .bad .stream { padding: 10px 6px; }
+  .bad .p-input { padding: 8px; }
+
+  /* ── 方案样式（呼吸感/统一栅格） ── */
+  .good .phone { display: flex; flex-direction: column; }
+  .good .content-col { flex: 1; display: flex; flex-direction: column; padding: 0 16px; }
+  .good .p-head { padding: 0; }
+  .good .stream { padding: 14px 0 8px; }
+  .good .think { padding: 10px 14px; }
+  .good .tool { padding: 10px 14px; }
+  .good .a-card { padding: 14px 16px; }
+  .good .a-tag { padding: 0; margin-bottom: 8px; }
+  .good .a-text { padding: 0; line-height: 23px; }
+  .good .u-bubble { padding: 12px 16px; line-height: 22px; }
+  .good .body { padding-left: 12px; }
+  /* 输入区与消息列对齐：前置导轨等宽占位 */
+  .good .p-input { padding: 10px 0 14px; }
+  .good .rail-spacer { width: 30px; flex: none; }
+  .anno { position: absolute; z-index: 10; font-size: 11px; color: #0A0F1E; background: #34D399;
+    border-radius: 6px; padding: 3px 8px; font-weight: 600; box-shadow: 0 4px 10px rgba(0,0,0,.4); }
+  .anno.red { background: #F87171; }
+</style>
+</head>
+<body>
+
+<!-- ══ 左：现状 ══ -->
+<section class="panel bad">
+  <div class="panel-title">✕ 现状（问题）</div>
+  <div class="panel-sub">① 卡片内文字与边框距离仅 2-6px，挤压感强 ② 消息起点（导轨后）与输入框起点差 30+px，视觉错位 ③ 思考/工具条内边距被压缩</div>
+  <div class="phone">
+    <div class="guide" style="left: 16px;"><span class="guide-label">输入框左缘</span></div>
+    <div class="guide" style="left: 52px; border-color: rgba(248,113,113,.6);"><span class="guide-label" style="color:#F87171;background:rgba(248,113,113,.12)">消息左缘（错位36px）</span></div>
+    <div class="p-head">
+      <div class="hbtn">◧</div>
+      <div class="htitle"><div class="t">APP 登录与 Token 获取</div><div class="s">/tmp/dsh-test · 运行中</div></div>
+      <div class="hbtn">⟳</div>
+    </div>
+    <div class="stream">
+      <div class="row"><div class="rail"><div class="dot" style="background:rgba(255,255,255,.25);border:1.5px solid rgba(255,255,255,.3)"></div><div class="ln"></div></div>
+        <div class="body"><span style="font-size:10.5px;color:#8C96B4;background:rgba(255,255,255,.06);padding:3px 8px;border-radius:99px">第 3 轮</span></div></div>
+      <div class="row"><div class="rail"><div class="dot" style="background:#22D3EE"></div><div class="ln"></div></div>
+        <div class="body"><div class="u-bubble">我想通过 app 登录，帮我分析方案</div></div></div>
+      <div class="row"><div class="rail"><div class="dot" style="background:#8B5CF6"></div><div class="ln"></div></div>
+        <div class="body"><div class="a-card">
+          <div class="a-tag">◈ dsh · deepseek-v4-flash</div>
+          <div class="a-text">思路可行。链路分两层：nginx Basic Auth + dsh 令牌换 Cookie。</div>
+          <div class="think"><span class="ic">💭</span><span class="lb">思考过程 · 342 字</span><span class="ex">展开 ▾</span></div>
+          <div class="tool"><span>🔧</span><span style="color:#ECF0FB;font-weight:600">web_search</span><span class="ok">✓</span></div>
+        </div></div></div>
+    </div>
+    <div class="p-input"><div class="ibox">输入新任务…</div><div class="ibtn">➤</div></div>
+    <div class="anno red" style="left: 210px; top: 320px;">字贴框边 ✕</div>
+    <div class="anno red" style="left: 120px; top: 810px;">与输入框错位 ✕</div>
+  </div>
+</section>
+
+<!-- ══ 右：方案 ══ -->
+<section class="panel good" style="margin-left: 60px;">
+  <div class="panel-title">✓ 方案（统一栅格 + 呼吸感）</div>
+  <div class="panel-sub">① 统一内边距体系：卡片 14-16px、思考/工具条 10-14px、气泡 12-16px，行高 22-23 ② 输入框前加导轨等宽占位 30px，与消息内容<strong>完全左对齐</strong>，右侧与气泡/发送键对齐 ③ 全部内容收进同一 860px 居中栏（展开态）</div>
+  <div class="phone">
+    <div class="guide" style="left: 64px;"><span class="guide-label">消息/输入统一左缘</span></div>
+    <div class="guide" style="right: 16px;"><span class="guide-label" style="right:4px">统一右缘（气泡/发送键）</span></div>
+    <div class="content-col">
+      <div class="p-head">
+        <div class="hbtn">◧</div>
+        <div class="htitle"><div class="t">APP 登录与 Token 获取</div><div class="s">/tmp/dsh-test · 运行中</div></div>
+        <div class="hbtn">⟳</div>
+      </div>
+      <div class="stream">
+        <div class="row"><div class="rail"><div class="dot" style="background:transparent;border:1.5px solid rgba(255,255,255,.3)"></div><div class="ln"></div></div>
+          <div class="body"><span style="font-size:10.5px;color:#8C96B4;background:rgba(255,255,255,.06);padding:4px 12px;border-radius:99px">第 3 轮</span></div></div>
+        <div class="row"><div class="rail"><div class="dot" style="background:#22D3EE"></div><div class="ln"></div></div>
+          <div class="body"><div class="u-bubble">我想通过 app 登录，帮我分析方案</div></div></div>
+        <div class="row"><div class="rail"><div class="dot" style="background:#8B5CF6"></div><div class="ln"></div></div>
+          <div class="body"><div class="a-card">
+            <div class="a-tag">◈ dsh · deepseek-v4-flash</div>
+            <div class="a-text">思路可行。链路分两层：nginx Basic Auth + dsh 令牌换 Cookie。</div>
+            <div class="think"><span class="ic">💭</span><span class="lb">思考过程 · 342 字</span><span class="ex">展开 ▾</span></div>
+            <div class="tool"><span>🔧</span><span style="color:#ECF0FB;font-weight:600">web_search</span><span class="ok">✓</span></div>
+          </div></div></div>
+      </div>
+      <div class="p-input">
+        <div class="rail-spacer"></div>
+        <div class="ibox">输入新任务…</div>
+        <div class="ibtn">➤</div>
+      </div>
+    </div>
+    <div class="anno" style="left: 250px; top: 330px;">文字离框 14px ✓</div>
+    <div class="anno" style="left: 110px; top: 815px;">输入框与消息对齐 ✓</div>
+  </div>
+</section>
+
+</body>
+</html>

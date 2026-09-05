@@ -1,0 +1,321 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>PocketDSH 宸ヤ綔鍙?路 娣辩┖鎸囨尌鑸?/title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 2360px; height: 1500px; overflow: hidden; }
+  body {
+    font-family: -apple-system, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif;
+    color: #0F172A;
+    background:
+      radial-gradient(1500px 900px at 80% -10%, rgba(37,99,235,.07), transparent 60%),
+      radial-gradient(1300px 800px at 5% 110%, rgba(30,58,138,.06), transparent 55%),
+      linear-gradient(135deg, #F7F9FC 0%, #F1F4F9 50%, #E9EEF6 100%);
+    display: flex;
+  }
+  .label { position: absolute; top: 28px; left: 40px; font-size: 20px; font-weight: 700; color: #1E3A8A; letter-spacing: 2px; }
+  .label small { color: #93A1B8; font-weight: 400; letter-spacing: 0; margin-left: 12px; font-size: 14px; }
+
+  /* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 宸︿晶锛氬睍寮€鎬佸弻鏍忓伐浣滃彴 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+  .stage { width: 1520px; height: 100%; padding: 80px 40px 40px; position: relative; }
+  .duo { width: 100%; height: 100%; display: flex; border-radius: 28px; overflow: hidden;
+    border: 1px solid #E7EBF2; background: #FFFFFF;
+    box-shadow: 0 30px 80px rgba(15,23,42,.12); }
+
+  /* 宸︽爮锛氫細璇濆垪琛?*/
+  .list-pane { width: 340px; border-right: 1px solid rgba(15,23,42,.08); display: flex; flex-direction: column; }
+  .lp-head { padding: 22px 20px 14px; }
+  .lp-title { font-size: 21px; font-weight: 700; }
+  .search { margin-top: 14px; height: 44px; border-radius: 14px; background: #F5F7FB;
+    border: 1px solid #E7EBF2; display: flex; align-items: center; gap: 10px; padding: 0 14px;
+    color: #93A1B8; font-size: 14px; }
+  .sess-scroll { flex: 1; overflow: hidden; padding: 6px 12px 12px; }
+  .sess { display: flex; gap: 12px; padding: 14px 12px; border-radius: 16px; margin-bottom: 6px; position: relative; }
+  .sess.sel { background: linear-gradient(90deg, rgba(37,99,235,.10), rgba(30,58,138,.08)); border: 1px solid rgba(37,99,235,.45); }
+  .sess .dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; flex: none; }
+  .dot.run { background: #0E9F6E; box-shadow: 0 0 0 4px rgba(14,159,110,.15); }
+  .dot.idle { background: rgba(15,23,42,.15); }
+  .sess .body { flex: 1; min-width: 0; }
+  .sess .t { font-size: 15.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sess .d { font-size: 12.5px; color: #93A1B8; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sess .meta { display: flex; justify-content: space-between; margin-top: 7px; font-size: 11.5px; color: #93A1B8; }
+  .pill-mini { background: #EDF3FF; color: #2563EB; border-radius: 6px; padding: 2px 7px; }
+  .lp-foot { padding: 14px 16px 18px; border-top: 1px solid rgba(15,23,42,.08); }
+  .new-btn { height: 48px; border-radius: 14px; display: flex; align-items: center; justify-content: center; gap: 10px;
+    background: linear-gradient(135deg, rgba(37,99,235,.30), rgba(30,58,138,.10));
+    border: 1px solid rgba(37,99,235,.45); color: #1E3A8A; font-size: 15.5px; font-weight: 600; }
+
+  /* 鍙虫爮锛氬璇濆尯 */
+  .chat-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .cp-head { height: 68px; display: flex; align-items: center; gap: 14px; padding: 0 22px;
+    border-bottom: 1px solid rgba(15,23,42,.08); }
+  .cp-title { font-size: 17px; font-weight: 700; }
+  .cp-sub { font-size: 12.5px; color: #93A1B8; margin-top: 3px; display: flex; align-items: center; gap: 8px; }
+  .cp-sub .mono { font-family: Consolas, monospace; background: #F5F7FB; border-radius: 6px; padding: 2px 8px; color: #1E3A8A; }
+  .icon-btn { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; font-size: 19px;
+    background: #F5F7FB; border: 1px solid #E7EBF2; color: #5B6B85; }
+  .icon-btn.accent { color: #2563EB; border-color: rgba(37,99,235,.45); }
+
+  .stream { flex: 1; padding: 22px 26px; overflow: hidden; display: flex; flex-direction: column; gap: 14px; }
+  .turn-sep { display: flex; align-items: center; gap: 12px; color: #93A1B8; font-size: 12px; }
+  .turn-sep::before, .turn-sep::after { content: ""; flex: 1; height: 1px; background: rgba(15,23,42,.08); }
+
+  .msg-user { align-self: flex-end; max-width: 70%; padding: 13px 17px; border-radius: 18px 18px 5px 18px;
+    background: linear-gradient(135deg, #E8F0FE, #DCE8FC);
+    border: 1px solid #C9DDF9; font-size: 15px; line-height: 1.6; }
+
+  .msg-ai { align-self: flex-start; width: 88%; border-radius: 18px; background: #FFFFFF;
+    border: 1px solid rgba(15,23,42,.08); overflow: hidden; }
+  .ai-tag { display: flex; align-items: center; gap: 8px; padding: 11px 16px 0; font-size: 11.5px; color: #2563EB; }
+  .ai-body { padding: 10px 16px 14px; }
+  .reason { border-radius: 12px; background: #F5F7FB; border: 1px dashed #C9D4E5;
+    padding: 10px 13px; font-size: 12.5px; color: #5B6B85; line-height: 1.6; margin-bottom: 10px; }
+  .reason b { color: #33415C; font-weight: 600; }
+  .ai-text { font-size: 15px; line-height: 1.7; color: #0F172A; }
+  .ai-text code { font-family: Consolas, monospace; background: #EDF3FF; color: #1E3A8A; border-radius: 5px; padding: 1px 6px; font-size: 13px; }
+  .tool-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 10px 13px; border-radius: 12px;
+    background: #FFFFFF; border: 1px solid rgba(15,23,42,.08); font-size: 13px; color: #5B6B85; }
+  .tool-row .ic { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; font-size: 15px;
+    background: #EDF3FF; }
+  .tool-row .nm { color: #0F172A; font-weight: 600; }
+  .tool-row .mono { font-family: Consolas, monospace; font-size: 12px; color: #93A1B8; }
+  .tool-row .st { margin-left: auto; color: #0E9F6E; font-size: 12.5px; }
+  .term { margin-top: 10px; border-radius: 12px; background: #0F1B2D; border: 1px solid rgba(37,99,235,.30);
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px; line-height: 1.8; padding: 12px 16px; color: #C9E3F5; }
+  .term .g { color: #0E9F6E; } .term .c { color: #93A1B8; } .term .y { color: #FDE68A; }
+  .usage { margin-top: 10px; font-size: 11px; color: #93A1B8; display: flex; gap: 14px; }
+
+  .cp-input { padding: 16px 22px 20px; border-top: 1px solid rgba(15,23,42,.08); display: flex; gap: 12px; align-items: center; }
+  .attach { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; font-size: 20px;
+    background: #F5F7FB; border: 1px solid #E7EBF2; color: #5B6B85; }
+  .input-box { flex: 1; height: 48px; border-radius: 14px; background: #F5F7FB;
+    border: 1px solid #E7EBF2; display: flex; align-items: center; padding: 0 16px; color: #93A1B8; font-size: 14.5px; }
+  .send { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center;
+    background: linear-gradient(135deg, #1E3A8A, #2563EB); color: #FFFFFF; font-size: 19px;
+    box-shadow: 0 10px 26px rgba(37,99,235,.45); }
+  .send.off { background: rgba(15,23,42,.08); color: #93A1B8; box-shadow: none; }
+
+  /* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 鍙充晶锛氬悎鐩栧灞忎袱涓墜鏈烘 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */
+  .covers { flex: 1; display: flex; gap: 36px; align-items: center; justify-content: center; position: relative; }
+  .phone { width: 340px; height: 1220px; border-radius: 44px; border: 3px solid #DCE4F0;
+    background: linear-gradient(180deg, #FBFCFE, #F3F6FA); overflow: hidden; display: flex; flex-direction: column;
+    box-shadow: 0 30px 70px rgba(15,23,42,.15); position: relative; }
+  .phone .cap { position: absolute; bottom: 14px; left: 0; right: 0; text-align: center; font-size: 13px; color: #93A1B8; z-index: 5; }
+  .p-head { height: 108px; padding: 40px 18px 0; display: flex; align-items: center; gap: 10px;
+    border-bottom: 1px solid rgba(15,23,42,.08); }
+  .back { width: 44px; height: 44px; border-radius: 13px; display: grid; place-items: center; font-size: 20px; color: #2563EB;
+    background: #F5F7FB; border: 1px solid #E7EBF2; }
+  .p-title-col { flex: 1; min-width: 0; }
+  .p-title { font-size: 16px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .p-sub { font-size: 11px; color: #93A1B8; margin-top: 2px; }
+  .p-search { margin: 14px 16px 8px; height: 42px; border-radius: 13px; background: #F5F7FB;
+    border: 1px solid #E7EBF2; display: flex; align-items: center; gap: 9px; padding: 0 13px; color: #93A1B8; font-size: 13px; }
+  .p-list { flex: 1; padding: 4px 10px 90px; overflow: hidden; }
+  .p-sess { padding: 13px 12px; border-radius: 15px; margin-bottom: 5px; }
+  .p-sess.sel { background: linear-gradient(90deg, rgba(37,99,235,.10), rgba(30,58,138,.08)); border: 1px solid rgba(37,99,235,.45); }
+  .p-stream { flex: 1; padding: 14px 14px 100px; display: flex; flex-direction: column; gap: 11px; overflow: hidden; }
+  .p-msg-user { align-self: flex-end; max-width: 86%; padding: 11px 14px; border-radius: 16px 16px 5px 16px;
+    background: linear-gradient(135deg, #E8F0FE, #DCE8FC);
+    border: 1px solid #C9DDF9; font-size: 13.5px; line-height: 1.55; }
+  .p-msg-ai { align-self: flex-start; width: 92%; border-radius: 16px; background: #FFFFFF;
+    border: 1px solid rgba(15,23,42,.08); padding: 11px 13px; font-size: 13.5px; line-height: 1.6; }
+  .p-term { border-radius: 11px; background: #0F1B2D; border: 1px solid rgba(37,99,235,.30);
+    font-family: Consolas, monospace; font-size: 11px; line-height: 1.75; padding: 10px 12px; color: #C9E3F5; }
+  .p-tabs { position: absolute; bottom: 34px; left: 14px; right: 14px; height: 74px; border-radius: 24px;
+    background: rgba(255,255,255,.96); border: 1px solid #E7EBF2; backdrop-filter: blur(18px);
+    display: flex; justify-content: space-around; align-items: center; }
+  .p-tab { display: flex; flex-direction: column; align-items: center; gap: 5px; font-size: 11px; color: #93A1B8; min-width: 64px; }
+  .p-tab.on { color: #2563EB; }
+  .p-input { position: absolute; bottom: 34px; left: 14px; right: 14px; display: flex; gap: 10px; }
+  .p-input .box { flex: 1; height: 46px; border-radius: 14px; background: #F5F7FB;
+    border: 1px solid #E7EBF2; display: flex; align-items: center; padding: 0 14px; color: #93A1B8; font-size: 13px; }
+  .p-input .snd { width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center;
+    background: rgba(15,23,42,.08); color: #93A1B8; font-size: 17px; }
+</style>
+</head>
+<body>
+
+<!-- 鈺愨晲鈺?灞曞紑鎬?鈺愨晲鈺?-->
+<section class="stage">
+  <div class="label">灞曞紑鎬?路 鍙屾爮宸ヤ綔鍙?small>宸︼細浼氳瘽鍒楄〃锛堟悳绱?鏂板缓甯搁┗锛?锝?鍙筹細瀵硅瘽鍖?/small></div>
+  <div class="duo">
+    <!-- 浼氳瘽鍒楄〃 -->
+    <aside class="list-pane">
+      <div class="lp-head">
+        <div class="lp-title">浼氳瘽</div>
+        <div class="search">馃攳 鎼滅储浼氳瘽鈥?/div>
+      </div>
+      <div class="sess-scroll">
+        <div class="sess sel">
+          <span class="dot run"></span>
+          <div class="body">
+            <div class="t">APP 鐧诲綍涓?Token 鑾峰彇</div>
+            <div class="d">鎴戞兂閫氳繃 app 鐧诲綍 dsh.goldclew.com鈥?/div>
+            <div class="meta"><span class="pill-mini">3 杞?路 12 姝?/span><span>鍒氬垰</span></div>
+          </div>
+        </div>
+        <div class="sess">
+          <span class="dot idle"></span>
+          <div class="body">
+            <div class="t">浣犲ソ</div>
+            <div class="d">浣犲ソ锛佹垜鏄繍琛屽湪 DeepSeek Harness 涓殑缂栫爜浠ｇ悊鈥?/div>
+            <div class="meta"><span>1 杞?/span><span>2 灏忔椂鍓?/span></div>
+          </div>
+        </div>
+        <div class="sess">
+          <span class="dot idle"></span>
+          <div class="body">
+            <div class="t">寰俊鎺ㄩ€佹彃浠惰皟鐮?/div>
+            <div class="d">鎼滅储鎺ュ彛鏆傛椂涓嶅彲鐢紝涓嶈繃鎴戝凡缁忕洿鎺ユ姄鍙栤€?/div>
+            <div class="meta"><span>5 杞?/span><span>鏄ㄥぉ</span></div>
+          </div>
+        </div>
+        <div class="sess">
+          <span class="dot idle"></span>
+          <div class="body">
+            <div class="t">鍗氬閮ㄧ讲娴佹按绾?/div>
+            <div class="d">鏋勫缓 鈫?鍚屾 鈫?鍋ュ悍妫€鏌ュ叏閮ㄩ€氳繃鈥?/div>
+            <div class="meta"><span>8 杞?/span><span>9鏈?鏃?/span></div>
+          </div>
+        </div>
+      </div>
+      <div class="lp-foot">
+        <div class="new-btn">锛?鏂板缓浼氳瘽</div>
+      </div>
+    </aside>
+
+    <!-- 瀵硅瘽鍖?-->
+    <main class="chat-pane">
+      <div class="cp-head">
+        <div style="flex:1; min-width:0">
+          <div class="cp-title">APP 鐧诲綍涓?Token 鑾峰彇</div>
+          <div class="cp-sub"><span class="mono">/tmp/dsh-test</span><span>路</span><span>deepseek-v4-flash</span><span>路</span><span style="color:#0E9F6E">鈼?杩愯涓?/span></div>
+        </div>
+        <div class="icon-btn accent">鉄?/div>
+        <div class="icon-btn">鈰?/div>
+      </div>
+
+      <div class="stream">
+        <div class="turn-sep">绗?3 杞?/div>
+
+        <div class="msg-user">鎴戞兂閫氳繃 app 鐧诲綍 https://dsh.goldclew.com/锛岃緭鍏ョ敤鎴峰悕瀵嗙爜锛岀劧鍚庤幏鍙?token锛屽府鎴戝垎鏋愪笅鍙鎬у拰鏂规</div>
+
+        <div class="msg-ai">
+          <div class="ai-tag">鈼?dsh 路 deepseek-v4-flash</div>
+          <div class="ai-body">
+            <div class="reason"><b>馃挱 鎬濊€冭繃绋?/b>锛堢偣鍑诲睍寮€锛?br>鏈夋€濇兂鈥斺€旇€呯洰褰曟潈闄愭湰韬槸姝ｅ父鐨勶紙moypray 鎷ユ湁涓斿彲鍐欙級锛屼絾鎴戝厛寮勬竻杩欎釜鎶ラ敊鐨勬潵婧愨€︹€?/div>
+            <div class="ai-text">鎬濊矾鍙銆傛暣鏉￠摼璺垎涓ゅ眰锛?br><br>1锔忊儯 <b>nginx Basic Auth</b>鈥斺€旂敤鎴峰悕瀵嗙爜鍦ㄨ繖涓€灞傦紝APP 姣忔璇锋眰鑷姩鎼哄甫锛?br>2锔忊儯 <b>dsh 浠ょ墝灞?/b>鈥斺€?code>dsh web</code> 鍚姩鏃舵墦鍗板甫 <code>token</code> 鐨?URL锛屾墦寮€涓€娆″嵆鍙崲鍙?30 澶╃鍚?Cookie銆?br><br>鎴戝厛纭涓€涓嬫湇鍔″櫒褰撳墠鐨勪护鐗岀姸鎬侊細</div>
+            <div class="term">
+              <div><span class="g">$</span> curl -i https://dsh.goldclew.com/ -u moypray:***</div>
+              <div>HTTP/1.1 <span class="y">401</span> Unauthorized</div>
+              <div><span class="c">dsh web authentication required; reopen the URL printed by dsh web.</span></div>
+            </div>
+            <div class="tool-row">
+              <div class="ic">馃敡</div>
+              <div><span class="nm">web_search</span> <span class="mono">"dsh web token cookie 30d"</span></div>
+              <div class="st">鉁?3 鏉＄粨鏋?/div>
+            </div>
+            <div class="usage"><span>杈撳叆 8.1k tok</span><span>杈撳嚭 564 tok</span><span>鑰楁椂 84s</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="cp-input">
+        <div class="attach">馃搸</div>
+        <div class="input-box">杈撳叆鏂颁换鍔♀€︼紙鍙妯″紡锛屽彂閫佸姛鑳戒笅鏈熷紑鏀撅級</div>
+        <div class="send off">鉃?/div>
+      </div>
+    </main>
+  </div>
+</section>
+
+<!-- 鈺愨晲鈺?鍚堢洊鎬?鈺愨晲鈺?-->
+<section class="covers">
+  <div class="label" style="left:40px">鍚堢洊澶栧睆 路 鍗曟爮<small>浼氳瘽鍒楄〃 鈫?瀵硅瘽椤?涓ょ骇瀵艰埅</small></div>
+
+  <!-- 鎵嬫満1锛氫細璇濆垪琛?-->
+  <div class="phone" style="margin-top:60px">
+    <div class="p-head">
+      <div class="p-title-col">
+        <div class="p-title">浼氳瘽</div>
+        <div class="p-sub">dsh.goldclew.com 路 4 涓細璇?/div>
+      </div>
+      <div class="back" style="color:#5B6B85">鉄?/div>
+    </div>
+    <div class="p-search">馃攳 鎼滅储浼氳瘽鈥?/div>
+    <div class="p-list">
+      <div class="p-sess sel">
+        <div style="display:flex; gap:9px">
+          <span class="dot run" style="margin-top:6px"></span>
+          <div style="flex:1; min-width:0">
+            <div class="t" style="font-size:14.5px; font-weight:600">APP 鐧诲綍涓?Token 鑾峰彇</div>
+            <div style="font-size:12px; color:#93A1B8; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">鎴戞兂閫氳繃 app 鐧诲綍 dsh.goldclew.com鈥?/div>
+            <div style="display:flex; justify-content:space-between; margin-top:6px; font-size:11px; color:#93A1B8"><span class="pill-mini">3 杞?/span><span>鍒氬垰</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="p-sess">
+        <div style="font-size:14.5px; font-weight:600">浣犲ソ</div>
+        <div style="font-size:12px; color:#93A1B8; margin-top:4px">浣犲ソ锛佹垜鏄繍琛屽湪 DeepSeek Harness鈥?/div>
+        <div style="font-size:11px; color:#93A1B8; margin-top:6px; text-align:right">2 灏忔椂鍓?/div>
+      </div>
+      <div class="p-sess">
+        <div style="font-size:14.5px; font-weight:600">寰俊鎺ㄩ€佹彃浠惰皟鐮?/div>
+        <div style="font-size:12px; color:#93A1B8; margin-top:4px">鎼滅储鎺ュ彛鏆傛椂涓嶅彲鐢紝涓嶈繃鎴戝凡缁忊€?/div>
+        <div style="font-size:11px; color:#93A1B8; margin-top:6px; text-align:right">鏄ㄥぉ</div>
+      </div>
+      <div class="p-sess">
+        <div style="font-size:14.5px; font-weight:600">鍗氬閮ㄧ讲娴佹按绾?/div>
+        <div style="font-size:12px; color:#93A1B8; margin-top:4px">鏋勫缓 鈫?鍚屾 鈫?鍋ュ悍妫€鏌ュ叏閮ㄩ€氳繃</div>
+        <div style="font-size:11px; color:#93A1B8; margin-top:6px; text-align:right">9鏈?鏃?/div>
+      </div>
+    </div>
+    <div class="p-tabs">
+      <div class="p-tab"><span style="font-size:20px">鈼?/span>杩炴帴涓績</div>
+      <div class="p-tab on"><span style="font-size:20px">鈼?/span>浼氳瘽</div>
+      <div class="p-tab"><span style="font-size:20px">鈿?/span>璁剧疆</div>
+    </div>
+    <div class="cap">浼氳瘽鍒楄〃椤碉紙搴曢儴 Tab 鍒囨崲锛?/div>
+  </div>
+
+  <!-- 鎵嬫満2锛氬璇濋〉 -->
+  <div class="phone" style="margin-top:60px">
+    <div class="p-head">
+      <div class="back">鈥?/div>
+      <div class="p-title-col">
+        <div class="p-title">APP 鐧诲綍涓?Token 鑾峰彇</div>
+        <div class="p-sub">/tmp/dsh-test 路 杩愯涓?/div>
+      </div>
+      <div class="back" style="color:#2563EB">鉄?/div>
+    </div>
+    <div class="p-stream">
+      <div class="turn-sep" style="font-size:11px">绗?3 杞?/div>
+      <div class="p-msg-user">鎴戞兂閫氳繃 app 鐧诲綍 dsh.goldclew.com锛岃幏鍙?token锛屽府鎴戝垎鏋愪笅鏂规</div>
+      <div class="p-msg-ai">
+        <div style="font-size:11px; color:#2563EB; margin-bottom:6px">鈼?dsh 路 deepseek-v4-flash</div>
+        鎬濊矾鍙銆傞摼璺垎涓ゅ眰锛歯ginx Basic Auth 鐢ㄦ埛鍚嶅瘑鐮?+ dsh 浠ょ墝鎹?30 澶?Cookie銆傚厛纭浠ょ墝鐘舵€侊細
+        <div class="p-term" style="margin-top:8px">
+          <div><span class="g">$</span> curl -i https://dsh.goldclew.com/</div>
+          <div>HTTP/1.1 <span class="y">401</span> Unauthorized</div>
+        </div>
+        <div class="tool-row" style="margin-top:8px; padding:8px 10px">
+          <div class="ic" style="width:26px; height:26px; font-size:13px">馃敡</div>
+          <div style="min-width:0"><span class="nm" style="font-size:12.5px">web_search</span></div>
+          <div class="st" style="font-size:11.5px">鉁?/div>
+        </div>
+      </div>
+      <div class="p-msg-user">閭?cookie 杩囨湡鎬庝箞鍔烇紵</div>
+      <div class="p-msg-ai">浠ょ墝鍦?dsh 杩涚▼瀛樻椿鏈熼棿涓€鐩存湁鏁堚€斺€擟ookie 鍒版湡鑷姩鐢ㄤ繚瀛樼殑浠ょ墝缁湡锛屽叏绋嬫棤鎰燂紱鍙湁杩涚▼閲嶅惎鎵嶉渶瑕侀噸璐翠竴娆°€?/div>
+    </div>
+    <div class="p-input">
+      <div class="box">杈撳叆鏂颁换鍔♀€?/div>
+      <div class="snd">鉃?/div>
+    </div>
+    <div class="cap">瀵硅瘽椤碉紙鈥?杩斿洖鍒楄〃 路 涓嬫媺鍔犺浇鏇存棭锛?/div>
+  </div>
+</section>
+
+</body>
+</html>

@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>PocketDSH 工作台 · 深空指挥舱</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 2360px; height: 1500px; overflow: hidden; }
+  body {
+    font-family: -apple-system, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif;
+    color: #ECF0FB;
+    background:
+      radial-gradient(1500px 900px at 80% -10%, rgba(139,92,246,.15), transparent 60%),
+      radial-gradient(1300px 800px at 5% 110%, rgba(34,211,238,.10), transparent 55%),
+      linear-gradient(135deg, #06090F 0%, #0C1124 46%, #150F30 100%);
+    display: flex;
+  }
+  .label { position: absolute; top: 28px; left: 40px; font-size: 20px; font-weight: 700; color: #22D3EE; letter-spacing: 2px; }
+  .label small { color: #6C7799; font-weight: 400; letter-spacing: 0; margin-left: 12px; font-size: 14px; }
+
+  /* ══════════ 左侧：展开态双栏工作台 ══════════ */
+  .stage { width: 1520px; height: 100%; padding: 80px 40px 40px; position: relative; }
+  .duo { width: 100%; height: 100%; display: flex; border-radius: 28px; overflow: hidden;
+    border: 1px solid rgba(255,255,255,.14); background: rgba(10,14,28,.55); backdrop-filter: blur(24px);
+    box-shadow: 0 30px 80px rgba(0,0,0,.5); }
+
+  /* 左栏：会话列表 */
+  .list-pane { width: 340px; border-right: 1px solid rgba(255,255,255,.10); display: flex; flex-direction: column; }
+  .lp-head { padding: 22px 20px 14px; }
+  .lp-title { font-size: 21px; font-weight: 700; }
+  .search { margin-top: 14px; height: 44px; border-radius: 14px; background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.12); display: flex; align-items: center; gap: 10px; padding: 0 14px;
+    color: #6C7799; font-size: 14px; }
+  .sess-scroll { flex: 1; overflow: hidden; padding: 6px 12px 12px; }
+  .sess { display: flex; gap: 12px; padding: 14px 12px; border-radius: 16px; margin-bottom: 6px; position: relative; }
+  .sess.sel { background: linear-gradient(90deg, rgba(34,211,238,.16), rgba(139,92,246,.12)); border: 1px solid rgba(34,211,238,.35); }
+  .sess .dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; flex: none; }
+  .dot.run { background: #34D399; box-shadow: 0 0 10px #34D399; }
+  .dot.idle { background: rgba(255,255,255,.22); }
+  .sess .body { flex: 1; min-width: 0; }
+  .sess .t { font-size: 15.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sess .d { font-size: 12.5px; color: #8C96B4; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sess .meta { display: flex; justify-content: space-between; margin-top: 7px; font-size: 11.5px; color: #6C7799; }
+  .pill-mini { background: rgba(34,211,238,.14); color: #7FE3F7; border-radius: 6px; padding: 2px 7px; }
+  .lp-foot { padding: 14px 16px 18px; border-top: 1px solid rgba(255,255,255,.10); }
+  .new-btn { height: 48px; border-radius: 14px; display: flex; align-items: center; justify-content: center; gap: 10px;
+    background: linear-gradient(135deg, rgba(34,211,238,.22), rgba(139,92,246,.22));
+    border: 1px solid rgba(34,211,238,.40); color: #9BE8F5; font-size: 15.5px; font-weight: 600; }
+
+  /* 右栏：对话区 */
+  .chat-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .cp-head { height: 68px; display: flex; align-items: center; gap: 14px; padding: 0 22px;
+    border-bottom: 1px solid rgba(255,255,255,.10); }
+  .cp-title { font-size: 17px; font-weight: 700; }
+  .cp-sub { font-size: 12.5px; color: #8C96B4; margin-top: 3px; display: flex; align-items: center; gap: 8px; }
+  .cp-sub .mono { font-family: Consolas, monospace; background: rgba(255,255,255,.07); border-radius: 6px; padding: 2px 8px; color: #9BE8F5; }
+  .icon-btn { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; font-size: 19px;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); color: #C6CDE6; }
+  .icon-btn.accent { color: #22D3EE; border-color: rgba(34,211,238,.35); }
+
+  .stream { flex: 1; padding: 22px 26px; overflow: hidden; display: flex; flex-direction: column; gap: 14px; }
+  .turn-sep { display: flex; align-items: center; gap: 12px; color: #6C7799; font-size: 12px; }
+  .turn-sep::before, .turn-sep::after { content: ""; flex: 1; height: 1px; background: rgba(255,255,255,.10); }
+
+  .msg-user { align-self: flex-end; max-width: 70%; padding: 13px 17px; border-radius: 18px 18px 5px 18px;
+    background: linear-gradient(135deg, rgba(34,211,238,.20), rgba(139,92,246,.24));
+    border: 1px solid rgba(34,211,238,.32); font-size: 15px; line-height: 1.6; }
+
+  .msg-ai { align-self: flex-start; width: 88%; border-radius: 18px; background: rgba(255,255,255,.05);
+    border: 1px solid rgba(255,255,255,.10); overflow: hidden; }
+  .ai-tag { display: flex; align-items: center; gap: 8px; padding: 11px 16px 0; font-size: 11.5px; color: #7FE3F7; }
+  .ai-body { padding: 10px 16px 14px; }
+  .reason { border-radius: 12px; background: rgba(139,92,246,.10); border: 1px dashed rgba(139,92,246,.35);
+    padding: 10px 13px; font-size: 12.5px; color: #B9A8E8; line-height: 1.6; margin-bottom: 10px; }
+  .reason b { color: #C4B5FD; font-weight: 600; }
+  .ai-text { font-size: 15px; line-height: 1.7; color: #ECF0FB; }
+  .ai-text code { font-family: Consolas, monospace; background: rgba(34,211,238,.12); color: #9BE8F5; border-radius: 5px; padding: 1px 6px; font-size: 13px; }
+  .tool-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 10px 13px; border-radius: 12px;
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.10); font-size: 13px; color: #97A1C0; }
+  .tool-row .ic { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; font-size: 15px;
+    background: rgba(34,211,238,.14); }
+  .tool-row .nm { color: #ECF0FB; font-weight: 600; }
+  .tool-row .mono { font-family: Consolas, monospace; font-size: 12px; color: #8C96B4; }
+  .tool-row .st { margin-left: auto; color: #7CF3CE; font-size: 12.5px; }
+  .term { margin-top: 10px; border-radius: 12px; background: #05070D; border: 1px solid rgba(34,211,238,.22);
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px; line-height: 1.8; padding: 12px 16px; color: #A8E6F3; }
+  .term .g { color: #34D399; } .term .c { color: #5A6485; } .term .y { color: #FDE68A; }
+  .usage { margin-top: 10px; font-size: 11px; color: #6C7799; display: flex; gap: 14px; }
+
+  .cp-input { padding: 16px 22px 20px; border-top: 1px solid rgba(255,255,255,.10); display: flex; gap: 12px; align-items: center; }
+  .attach { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; font-size: 20px;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); color: #97A1C0; }
+  .input-box { flex: 1; height: 48px; border-radius: 14px; background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.12); display: flex; align-items: center; padding: 0 16px; color: #6C7799; font-size: 14.5px; }
+  .send { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center;
+    background: linear-gradient(135deg, #2FE3FF, #7C5CFF); color: #04121C; font-size: 19px;
+    box-shadow: 0 10px 26px rgba(34,211,238,.35); }
+  .send.off { background: rgba(255,255,255,.10); color: #5A6485; box-shadow: none; }
+
+  /* ══════════ 右侧：合盖外屏两个手机框 ══════════ */
+  .covers { flex: 1; display: flex; gap: 36px; align-items: center; justify-content: center; position: relative; }
+  .phone { width: 340px; height: 1220px; border-radius: 44px; border: 3px solid rgba(255,255,255,.16);
+    background: linear-gradient(180deg, #0A0F1E, #0E1128); overflow: hidden; display: flex; flex-direction: column;
+    box-shadow: 0 30px 70px rgba(0,0,0,.55); position: relative; }
+  .phone .cap { position: absolute; bottom: 14px; left: 0; right: 0; text-align: center; font-size: 13px; color: #6C7799; z-index: 5; }
+  .p-head { height: 108px; padding: 40px 18px 0; display: flex; align-items: center; gap: 10px;
+    border-bottom: 1px solid rgba(255,255,255,.10); }
+  .back { width: 44px; height: 44px; border-radius: 13px; display: grid; place-items: center; font-size: 20px; color: #22D3EE;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12); }
+  .p-title-col { flex: 1; min-width: 0; }
+  .p-title { font-size: 16px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .p-sub { font-size: 11px; color: #6C7799; margin-top: 2px; }
+  .p-search { margin: 14px 16px 8px; height: 42px; border-radius: 13px; background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.12); display: flex; align-items: center; gap: 9px; padding: 0 13px; color: #6C7799; font-size: 13px; }
+  .p-list { flex: 1; padding: 4px 10px 90px; overflow: hidden; }
+  .p-sess { padding: 13px 12px; border-radius: 15px; margin-bottom: 5px; }
+  .p-sess.sel { background: linear-gradient(90deg, rgba(34,211,238,.16), rgba(139,92,246,.12)); border: 1px solid rgba(34,211,238,.35); }
+  .p-stream { flex: 1; padding: 14px 14px 100px; display: flex; flex-direction: column; gap: 11px; overflow: hidden; }
+  .p-msg-user { align-self: flex-end; max-width: 86%; padding: 11px 14px; border-radius: 16px 16px 5px 16px;
+    background: linear-gradient(135deg, rgba(34,211,238,.20), rgba(139,92,246,.24));
+    border: 1px solid rgba(34,211,238,.32); font-size: 13.5px; line-height: 1.55; }
+  .p-msg-ai { align-self: flex-start; width: 92%; border-radius: 16px; background: rgba(255,255,255,.05);
+    border: 1px solid rgba(255,255,255,.10); padding: 11px 13px; font-size: 13.5px; line-height: 1.6; }
+  .p-term { border-radius: 11px; background: #05070D; border: 1px solid rgba(34,211,238,.22);
+    font-family: Consolas, monospace; font-size: 11px; line-height: 1.75; padding: 10px 12px; color: #A8E6F3; }
+  .p-tabs { position: absolute; bottom: 34px; left: 14px; right: 14px; height: 74px; border-radius: 24px;
+    background: rgba(10,14,28,.90); border: 1px solid rgba(255,255,255,.12); backdrop-filter: blur(18px);
+    display: flex; justify-content: space-around; align-items: center; }
+  .p-tab { display: flex; flex-direction: column; align-items: center; gap: 5px; font-size: 11px; color: #66708F; min-width: 64px; }
+  .p-tab.on { color: #22D3EE; }
+  .p-input { position: absolute; bottom: 34px; left: 14px; right: 14px; display: flex; gap: 10px; }
+  .p-input .box { flex: 1; height: 46px; border-radius: 14px; background: rgba(255,255,255,.07);
+    border: 1px solid rgba(255,255,255,.12); display: flex; align-items: center; padding: 0 14px; color: #6C7799; font-size: 13px; }
+  .p-input .snd { width: 46px; height: 46px; border-radius: 14px; display: grid; place-items: center;
+    background: rgba(255,255,255,.10); color: #5A6485; font-size: 17px; }
+</style>
+</head>
+<body>
+
+<!-- ═══ 展开态 ═══ -->
+<section class="stage">
+  <div class="label">展开态 · 双栏工作台<small>左：会话列表（搜索+新建常驻） ｜ 右：对话区</small></div>
+  <div class="duo">
+    <!-- 会话列表 -->
+    <aside class="list-pane">
+      <div class="lp-head">
+        <div class="lp-title">会话</div>
+        <div class="search">🔍 搜索会话…</div>
+      </div>
+      <div class="sess-scroll">
+        <div class="sess sel">
+          <span class="dot run"></span>
+          <div class="body">
+            <div class="t">APP 登录与 Token 获取</div>
+            <div class="d">我想通过 app 登录 dsh.goldclew.com…</div>
+            <div class="meta"><span class="pill-mini">3 轮 · 12 步</span><span>刚刚</span></div>
+          </div>
+        </div>
+        <div class="sess">
+          <span class="dot idle"></span>
+          <div class="body">
+            <div class="t">你好</div>
+            <div class="d">你好！我是运行在 DeepSeek Harness 中的编码代理…</div>
+            <div class="meta"><span>1 轮</span><span>2 小时前</span></div>
+          </div>
+        </div>
+        <div class="sess">
+          <span class="dot idle"></span>
+          <div class="body">
+            <div class="t">微信推送插件调研</div>
+            <div class="d">搜索接口暂时不可用，不过我已经直接抓取…</div>
+            <div class="meta"><span>5 轮</span><span>昨天</span></div>
+          </div>
+        </div>
+        <div class="sess">
+          <span class="dot idle"></span>
+          <div class="body">
+            <div class="t">博客部署流水线</div>
+            <div class="d">构建 → 同步 → 健康检查全部通过…</div>
+            <div class="meta"><span>8 轮</span><span>9月3日</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="lp-foot">
+        <div class="new-btn">＋ 新建会话</div>
+      </div>
+    </aside>
+
+    <!-- 对话区 -->
+    <main class="chat-pane">
+      <div class="cp-head">
+        <div style="flex:1; min-width:0">
+          <div class="cp-title">APP 登录与 Token 获取</div>
+          <div class="cp-sub"><span class="mono">/tmp/dsh-test</span><span>·</span><span>deepseek-v4-flash</span><span>·</span><span style="color:#7CF3CE">● 运行中</span></div>
+        </div>
+        <div class="icon-btn accent">⟳</div>
+        <div class="icon-btn">⋮</div>
+      </div>
+
+      <div class="stream">
+        <div class="turn-sep">第 3 轮</div>
+
+        <div class="msg-user">我想通过 app 登录 https://dsh.goldclew.com/，输入用户名密码，然后获取 token，帮我分析下可行性和方案</div>
+
+        <div class="msg-ai">
+          <div class="ai-tag">◈ dsh · deepseek-v4-flash</div>
+          <div class="ai-body">
+            <div class="reason"><b>💭 思考过程</b>（点击展开）<br>有思想——者目录权限本身是正常的（moypray 拥有且可写），但我先弄清这个报错的来源……</div>
+            <div class="ai-text">思路可行。整条链路分两层：<br><br>1️⃣ <b>nginx Basic Auth</b>——用户名密码在这一层，APP 每次请求自动携带；<br>2️⃣ <b>dsh 令牌层</b>——<code>dsh web</code> 启动时打印带 <code>token</code> 的 URL，打开一次即可换取 30 天签名 Cookie。<br><br>我先确认一下服务器当前的令牌状态：</div>
+            <div class="term">
+              <div><span class="g">$</span> curl -i https://dsh.goldclew.com/ -u moypray:***</div>
+              <div>HTTP/1.1 <span class="y">401</span> Unauthorized</div>
+              <div><span class="c">dsh web authentication required; reopen the URL printed by dsh web.</span></div>
+            </div>
+            <div class="tool-row">
+              <div class="ic">🔧</div>
+              <div><span class="nm">web_search</span> <span class="mono">"dsh web token cookie 30d"</span></div>
+              <div class="st">✓ 3 条结果</div>
+            </div>
+            <div class="usage"><span>输入 8.1k tok</span><span>输出 564 tok</span><span>耗时 84s</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="cp-input">
+        <div class="attach">📎</div>
+        <div class="input-box">输入新任务…（只读模式，发送功能下期开放）</div>
+        <div class="send off">➤</div>
+      </div>
+    </main>
+  </div>
+</section>
+
+<!-- ═══ 合盖态 ═══ -->
+<section class="covers">
+  <div class="label" style="left:40px">合盖外屏 · 单栏<small>会话列表 ↔ 对话页 两级导航</small></div>
+
+  <!-- 手机1：会话列表 -->
+  <div class="phone" style="margin-top:60px">
+    <div class="p-head">
+      <div class="p-title-col">
+        <div class="p-title">会话</div>
+        <div class="p-sub">dsh.goldclew.com · 4 个会话</div>
+      </div>
+      <div class="back" style="color:#97A1C0">⟳</div>
+    </div>
+    <div class="p-search">🔍 搜索会话…</div>
+    <div class="p-list">
+      <div class="p-sess sel">
+        <div style="display:flex; gap:9px">
+          <span class="dot run" style="margin-top:6px"></span>
+          <div style="flex:1; min-width:0">
+            <div class="t" style="font-size:14.5px; font-weight:600">APP 登录与 Token 获取</div>
+            <div style="font-size:12px; color:#8C96B4; margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">我想通过 app 登录 dsh.goldclew.com…</div>
+            <div style="display:flex; justify-content:space-between; margin-top:6px; font-size:11px; color:#6C7799"><span class="pill-mini">3 轮</span><span>刚刚</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="p-sess">
+        <div style="font-size:14.5px; font-weight:600">你好</div>
+        <div style="font-size:12px; color:#8C96B4; margin-top:4px">你好！我是运行在 DeepSeek Harness…</div>
+        <div style="font-size:11px; color:#6C7799; margin-top:6px; text-align:right">2 小时前</div>
+      </div>
+      <div class="p-sess">
+        <div style="font-size:14.5px; font-weight:600">微信推送插件调研</div>
+        <div style="font-size:12px; color:#8C96B4; margin-top:4px">搜索接口暂时不可用，不过我已经…</div>
+        <div style="font-size:11px; color:#6C7799; margin-top:6px; text-align:right">昨天</div>
+      </div>
+      <div class="p-sess">
+        <div style="font-size:14.5px; font-weight:600">博客部署流水线</div>
+        <div style="font-size:12px; color:#8C96B4; margin-top:4px">构建 → 同步 → 健康检查全部通过</div>
+        <div style="font-size:11px; color:#6C7799; margin-top:6px; text-align:right">9月3日</div>
+      </div>
+    </div>
+    <div class="p-tabs">
+      <div class="p-tab"><span style="font-size:20px">◈</span>连接中心</div>
+      <div class="p-tab on"><span style="font-size:20px">◧</span>会话</div>
+      <div class="p-tab"><span style="font-size:20px">⚙</span>设置</div>
+    </div>
+    <div class="cap">会话列表页（底部 Tab 切换）</div>
+  </div>
+
+  <!-- 手机2：对话页 -->
+  <div class="phone" style="margin-top:60px">
+    <div class="p-head">
+      <div class="back">‹</div>
+      <div class="p-title-col">
+        <div class="p-title">APP 登录与 Token 获取</div>
+        <div class="p-sub">/tmp/dsh-test · 运行中</div>
+      </div>
+      <div class="back" style="color:#22D3EE">⟳</div>
+    </div>
+    <div class="p-stream">
+      <div class="turn-sep" style="font-size:11px">第 3 轮</div>
+      <div class="p-msg-user">我想通过 app 登录 dsh.goldclew.com，获取 token，帮我分析下方案</div>
+      <div class="p-msg-ai">
+        <div style="font-size:11px; color:#7FE3F7; margin-bottom:6px">◈ dsh · deepseek-v4-flash</div>
+        思路可行。链路分两层：nginx Basic Auth 用户名密码 + dsh 令牌换 30 天 Cookie。先确认令牌状态：
+        <div class="p-term" style="margin-top:8px">
+          <div><span class="g">$</span> curl -i https://dsh.goldclew.com/</div>
+          <div>HTTP/1.1 <span class="y">401</span> Unauthorized</div>
+        </div>
+        <div class="tool-row" style="margin-top:8px; padding:8px 10px">
+          <div class="ic" style="width:26px; height:26px; font-size:13px">🔧</div>
+          <div style="min-width:0"><span class="nm" style="font-size:12.5px">web_search</span></div>
+          <div class="st" style="font-size:11.5px">✓</div>
+        </div>
+      </div>
+      <div class="p-msg-user">那 cookie 过期怎么办？</div>
+      <div class="p-msg-ai">令牌在 dsh 进程存活期间一直有效——Cookie 到期自动用保存的令牌续期，全程无感；只有进程重启才需要重贴一次。</div>
+    </div>
+    <div class="p-input">
+      <div class="box">输入新任务…</div>
+      <div class="snd">➤</div>
+    </div>
+    <div class="cap">对话页（‹ 返回列表 · 下拉加载更早）</div>
+  </div>
+</section>
+
+</body>
+</html>
