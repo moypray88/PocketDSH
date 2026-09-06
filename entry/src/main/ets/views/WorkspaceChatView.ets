@@ -7,11 +7,12 @@ import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { BusinessError } from '@ohos.base';
 import { DshSessionsRepository } from '../service/DshSessionsRepository';
 import { DshStreamClient, DshStreamListener } from '../service/DshStreamClient';
+import { DshEventClient } from '../service/DshEventClient';
 import { DshConfigStore } from '../service/DshConfigStore';
-import { CatalogVm, ChatEntryKind, ChatEntryVm, HistoryPageVm, ModelGroupVm, ModelItemVm, SessionSectionVm, SessionSummaryVm, ToolCallVm, WorkspaceBaselineVm, WorkspaceVm } from '../model/SessionVms';
+import { CatalogVm, ChatEntryKind, ChatEntryVm, HistoryPageVm, ModelGroupVm, ModelItemVm, PendingAskVm, QuestionOptionVm, QuestionVm, SessionSectionVm, SessionSummaryVm, ToolCallVm, WorkspaceBaselineVm, WorkspaceVm } from '../model/SessionVms';
 import { MdBlock, MdKind, MdRun, parseMarkdown } from '../parse/MdParser';
 import { ThemeColors, ThemeManager } from '../theme/Theme';
-import { KEY_CUR_TAB, KEY_HIDDEN_TICK, TAB_SESSIONS } from '../model/DshTypes';
+import { KEY_ASK_JUMP_ID, KEY_ASK_JUMP_TICK, KEY_ASK_TICK, KEY_CHAT_SELECTED_ID, KEY_CUR_TAB, KEY_HIDDEN_TICK, TAB_SESSIONS } from '../model/DshTypes';
 
 /** 会话列表加载状态。 */
 enum ListState {
@@ -155,6 +156,16 @@ export struct WorkspaceChatView {
   @State modelOverride: string = '';
   /** 本机隐藏的会话 ID。 */
   @State hiddenIds: string[] = [];
+  /** dsh 待回答交互（提问/审批）：当前会话命中时在输入区上方渲染卡片。 */
+  @StorageProp(KEY_ASK_TICK) @Watch('onAskTick') askTick: number = 0;
+  /** 横幅跳转会话信号（全局横幅点击下发）。 */
+  @StorageProp(KEY_ASK_JUMP_TICK) @Watch('onAskJump') askJumpTick: number = 0;
+  /** 卡片展示的当前待处理项；草稿按题号并行存放在三个 @State 数组里。 */
+  @State askCard: PendingAskVm | null = null;
+  @State askDraftSel: string[][] = [];
+  @State askDraftCustom: string[] = [];
+  @State askSkipped: boolean[] = [];
+  @State askSubmitting: boolean = false;
   /** 重命名浮层。 */
   @State renameOpen: boolean = false;
   @State renameText: string = '';
@@ -260,9 +271,289 @@ export struct WorkspaceChatView {
     this.loadHidden();
   }
 
+  /** dsh 交互列表变化：重新挑出当前会话的待处理项。 */
+  private onAskTick(): void {
+    this.syncAskCard();
+  }
+
+  /** 同步当前会话命中的待处理项到卡片；换问题时重置草稿。 */
+  private syncAskCard(): void {
+    const all: PendingAskVm[] = DshEventClient.pendingAsks();
+    let found: PendingAskVm | null = null;
+    for (let i: number = 0; i < all.length; i++) {
+      if (all[i].sessionId === this.selectedId) {
+        found = all[i];
+        break;
+      }
+    }
+    if (found === null) {
+      this.askCard = null;
+      return;
+    }
+    if (this.askCard !== null && this.askCard.eventId === found.eventId) {
+      this.askCard = found;
+      return;
+    }
+    // 先重置草稿再换卡片：避免单帧内出现"新卡读旧草稿"的越界
+    const sel: string[][] = [];
+    const cus: string[] = [];
+    const sk: boolean[] = [];
+    for (let i: number = 0; i < found.questions.length; i++) {
+      sel.push([]);
+      cus.push('');
+      sk.push(false);
+    }
+    this.askDraftSel = sel;
+    this.askDraftCustom = cus;
+    this.askSkipped = sk;
+    this.askCard = found;
+  }
+
+  /** 草稿安全读取（卡与草稿重置的帧间隙防越界）。 */
+  private pickedLabels(qi: number): string[] {
+    return qi >= 0 && qi < this.askDraftSel.length ? this.askDraftSel[qi] : [];
+  }
+
+  private isPicked(qi: number, label: string): boolean {
+    return this.pickedLabels(qi).indexOf(label) >= 0;
+  }
+
+  private isSkipped(qi: number): boolean {
+    return qi >= 0 && qi < this.askSkipped.length && this.askSkipped[qi];
+  }
+
+  /** 全局横幅跳转：按 askJumpId 打开会话（列表里没有就先静默刷新再找一次）。 */
+  private onAskJump(): void {
+    const id: string | undefined = AppStorage.get<string>(KEY_ASK_JUMP_ID);
+    if (id === undefined || id === '') {
+      return;
+    }
+    for (let i: number = 0; i < this.sessions.length; i++) {
+      if (this.sessions[i].sessionId === id) {
+        this.openSession(this.sessions[i]);
+        return;
+      }
+    }
+    this.refreshList(false).then(() => {
+      for (let i: number = 0; i < this.sessions.length; i++) {
+        if (this.sessions[i].sessionId === id) {
+          this.openSession(this.sessions[i]);
+          return;
+        }
+      }
+      promptAction.showToast({ message: '该会话不在当前列表中，请从会话列表查找' });
+    });
+  }
+
+  /** 选项点选：单选覆盖、多选切换；打字/点选都会撤销跳过标记。 */
+  private toggleAskPick(qi: number, label: string): void {
+    if (this.askCard === null || qi >= this.askCard.questions.length || qi >= this.askDraftSel.length) {
+      return;
+    }
+    const multi: boolean = this.askCard.questions[qi].multiSelect;
+    const cur: string[] = this.askDraftSel[qi];
+    let next: string[];
+    if (multi) {
+      next = cur.indexOf(label) >= 0 ? cur.filter((x: string): boolean => x !== label) : cur.concat([label]);
+    } else {
+      next = [label];
+    }
+    this.askDraftSel[qi] = next;
+    this.askSkipped[qi] = false;
+    if (!multi) {
+      this.askDraftCustom[qi] = '';
+    }
+  }
+
+  /** 自定义答案输入：非多选题输入文本即清空选项（web 同构）。 */
+  private draftAskCustom(qi: number, value: string): void {
+    if (qi >= this.askDraftCustom.length) {
+      return;
+    }
+    this.askDraftCustom[qi] = value;
+    this.askSkipped[qi] = false;
+    const multi: boolean = this.askCard !== null && qi < this.askCard.questions.length
+      && this.askCard.questions[qi].multiSelect;
+    if (!multi && value !== '') {
+      this.askDraftSel[qi] = [];
+    }
+  }
+
+  private toggleAskSkip(qi: number): void {
+    if (qi >= this.askSkipped.length) {
+      return;
+    }
+    const next: boolean[] = this.askSkipped.slice();
+    next[qi] = !next[qi];
+    this.askSkipped = next;
+    if (next[qi]) {
+      if (qi < this.askDraftSel.length) {
+        this.askDraftSel[qi] = [];
+      }
+      if (qi < this.askDraftCustom.length) {
+        this.askDraftCustom[qi] = '';
+      }
+    }
+  }
+
+  /** 当前会话是否有计划审批卡（单题 planReview）。 */
+  private isPlanAsk(): boolean {
+    return this.askCard !== null && this.askCard.questions.length === 1
+      && this.askCard.questions[0].planReview;
+  }
+
+  /** 计划审批的「拒绝」选项（非 approve 的那个选项），可能不存在。 */
+  private planDeclineOption(): QuestionOptionVm | null {
+    if (!this.isPlanAsk() || this.askCard === null) {
+      return null;
+    }
+    const opts: QuestionOptionVm[] = this.askCard.questions[0].options;
+    for (let i: number = 0; i < opts.length; i++) {
+      if (opts[i].label !== this.askCard.questions[0].approveLabel) {
+        return opts[i];
+      }
+    }
+    return null;
+  }
+
+  /** 审批/计划卡安全取值（嵌套 @Builder 内各自收窄空值）。 */
+  private planApproveLabel(): string {
+    if (this.askCard !== null && this.askCard.questions.length > 0) {
+      return this.askCard.questions[0].approveLabel;
+    }
+    return '';
+  }
+
+  private planDeclineLabel(): string {
+    const d: QuestionOptionVm | null = this.planDeclineOption();
+    return d !== null ? d.label : '';
+  }
+
+  private askToolName(): string {
+    return this.askCard !== null ? this.askCard.toolName : '';
+  }
+
+  private askReason(): string {
+    return this.askCard !== null ? this.askCard.reason : '';
+  }
+
+  /** ForEach 键：eventId#题号（换问题时整组重建，规避 @Builder 按值捕获冻结）。 */
+  private askKey(qi: number): string {
+    return this.askCard !== null ? this.askCard.eventId + '#' + qi : 'none#' + qi;
+  }
+
+  /** 提交整组回答（校验未完成题 → $events/result）。 */
+  private async submitAsk(): Promise<void> {
+    const ask: PendingAskVm | null = this.askCard;
+    if (ask === null || this.askSubmitting) {
+      return;
+    }
+    for (let i: number = 0; i < ask.questions.length; i++) {
+      const done: boolean = i < this.askSkipped.length && this.askSkipped[i];
+      const picked: boolean = i < this.askDraftSel.length && this.askDraftSel[i].length > 0;
+      const typed: boolean = i < this.askDraftCustom.length && this.askDraftCustom[i].trim() !== '';
+      if (!done && !picked && !typed) {
+        promptAction.showToast({ message: '第 ' + (i + 1) + ' 题还没作答（可选「跳过此题」）' });
+        return;
+      }
+    }
+    this.askSubmitting = true;
+    try {
+      const ctx: common.Context = getContext(this);
+      await DshEventClient.answerQuestions(ctx, ask.eventId, ask.questions,
+        this.askDraftSel, this.askDraftCustom, this.askSkipped);
+      promptAction.showToast({ message: '已提交回答，dsh 继续任务' });
+    } catch (err) {
+      const e: BusinessError = err as BusinessError;
+      promptAction.showToast({ message: '提交失败：' + e.message });
+    } finally {
+      this.askSubmitting = false;
+    }
+  }
+
+  /** 计划审批快速作答（确认执行 / 拒绝）。 */
+  private async answerPlan(label: string): Promise<void> {
+    const ask: PendingAskVm | null = this.askCard;
+    if (ask === null || this.askSubmitting || ask.questions.length === 0) {
+      return;
+    }
+    this.askSubmitting = true;
+    try {
+      const ctx: common.Context = getContext(this);
+      const sel: string[][] = [[label]];
+      const cus: string[] = [''];
+      const sk: boolean[] = [false];
+      await DshEventClient.answerQuestions(ctx, ask.eventId, ask.questions, sel, cus, sk);
+      promptAction.showToast({ message: '已答复，dsh 继续任务' });
+    } catch (err) {
+      const e: BusinessError = err as BusinessError;
+      promptAction.showToast({ message: '提交失败：' + e.message });
+    } finally {
+      this.askSubmitting = false;
+    }
+  }
+
+  /** 工具审批决定。 */
+  private async answerApproval(decision: string): Promise<void> {
+    const ask: PendingAskVm | null = this.askCard;
+    if (ask === null || this.askSubmitting) {
+      return;
+    }
+    this.askSubmitting = true;
+    try {
+      const ctx: common.Context = getContext(this);
+      await DshEventClient.answerApproval(ctx, ask.eventId, decision);
+      promptAction.showToast({ message: decision === 'allowed-once' ? '已允许一次' : '已拒绝' });
+    } catch (err) {
+      const e: BusinessError = err as BusinessError;
+      promptAction.showToast({ message: '提交失败：' + e.message });
+    } finally {
+      this.askSubmitting = false;
+    }
+  }
+
+  /** 放弃整组问题（服务端按取消语义终止本轮提问）。 */
+  private async dismissAsk(): Promise<void> {
+    const ask: PendingAskVm | null = this.askCard;
+    if (ask === null || this.askSubmitting) {
+      return;
+    }
+    this.askSubmitting = true;
+    try {
+      const ctx: common.Context = getContext(this);
+      await DshEventClient.cancelQuestions(ctx, ask.eventId);
+      promptAction.showToast({ message: '已放弃，本轮问题作废' });
+    } catch (err) {
+      const e: BusinessError = err as BusinessError;
+      promptAction.showToast({ message: '操作失败：' + e.message });
+    } finally {
+      this.askSubmitting = false;
+    }
+  }
+
+  /** 去网页处理：让位给下一个监听端。 */
+  private async delegateAsk(): Promise<void> {
+    const ask: PendingAskVm | null = this.askCard;
+    if (ask === null || this.askSubmitting) {
+      return;
+    }
+    this.askSubmitting = true;
+    try {
+      const ctx: common.Context = getContext(this);
+      await DshEventClient.delegateEvent(ctx, ask.eventId);
+      promptAction.showToast({ message: '已让位，可在网页控制台作答' });
+    } catch (err) {
+      const e: BusinessError = err as BusinessError;
+      promptAction.showToast({ message: '操作失败：' + e.message });
+    } finally {
+      this.askSubmitting = false;
+    }
+  }
+
   /** 进入新任务草稿页。 */
   private enterDraft(): void {
     this.selectedId = '';
+    AppStorage.setOrCreate(KEY_CHAT_SELECTED_ID, '');
     this.entries = [];
     this.chatState = ChatState.Idle;
     this.drafting = true;
@@ -413,9 +704,11 @@ export struct WorkspaceChatView {
 
   private async openSession(s: SessionSummaryVm): Promise<void> {
     this.selectedId = s.sessionId;
+    AppStorage.setOrCreate(KEY_CHAT_SELECTED_ID, s.sessionId);
     this.throughSeq = s.asOfSeq;
     this.inChat = true;
     this.drafting = false;
+    this.syncAskCard();
     this.setBackDepth(1);
     this.setBackDepth(1);
     this.expandedSeqs = [];
@@ -1375,6 +1668,8 @@ export struct WorkspaceChatView {
       await this.loadHidden();
       if (this.selectedId === s.sessionId) {
         this.selectedId = '';
+        AppStorage.setOrCreate(KEY_CHAT_SELECTED_ID, '');
+        this.syncAskCard();
         this.inChat = false;
         this.setBackDepth(0);
         this.chatState = ChatState.Idle;
@@ -2615,6 +2910,7 @@ export struct WorkspaceChatView {
           }
         })
       }
+        this.pendingAskCard();
         this.inputBar();
         }
       }
@@ -3146,6 +3442,333 @@ export struct WorkspaceChatView {
     .onClick(() => {
       this.toggleExpand('' + e.seq);
     })
+  }
+
+  /* ───────────── dsh 待回答交互卡片（提问 / 审批） ───────────── */
+
+  @Builder
+  pendingAskCard() {
+    if (this.askCard !== null) {
+      Column({ space: 10 }) {
+        Row({ space: 8 }) {
+          Circle()
+            .width(8)
+            .height(8)
+            .fill(this.isPlanAsk() ? this.t().warn : this.t().accent2)
+          Text(this.askCard.kind === 'approval' ? '等待审批'
+            : (this.isPlanAsk() ? '计划待审' : 'dsh 有问题想请教你'))
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.isPlanAsk() ? this.t().warn : this.t().accent)
+          Blank()
+          Text(this.askCard.questions.length > 1 ? this.askCard.questions.length + ' 题' : '')
+            .fontSize(11)
+            .fontColor(this.t().textTertiary)
+        }
+        .width('100%')
+
+        Scroll() {
+          Column({ space: 14 }) {
+            if (this.askCard.kind === 'approval') {
+              this.askApprovalBody()
+            } else {
+              ForEach(this.askCard.questions, (q: QuestionVm, qi: number) => {
+                this.askQuestionBlock(q, qi)
+              }, (q: QuestionVm, qi: number) => this.askKey(qi))
+            }
+          }
+          .width('100%')
+        }
+        .width('100%')
+        .constraintSize({ maxHeight: 340 })
+        .scrollBar(BarState.Auto)
+        .edgeEffect(EdgeEffect.None)
+
+        Row({ space: 8 }) {
+          if (this.isPlanAsk()) {
+            this.askPlanFooter()
+          } else if (this.askCard.kind === 'approval') {
+            this.askApprovalFooter()
+          } else {
+            this.askQuestionsFooter()
+          }
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
+      }
+      .width('100%')
+      .padding(14)
+      .borderRadius(16)
+      .backgroundColor(this.t().bgCard)
+      .border({
+        width: 1,
+        color: this.isPlanAsk() ? this.t().warn : this.t().accent2,
+      })
+      .margin({ left: 14, right: 14, top: 8 })
+      .alignSelf(ItemAlign.Center)
+    }
+  }
+
+  /** 审批正文：原因（缺省给越权文案）+ 工具名。 */
+  @Builder
+  askApprovalBody() {
+    Column({ space: 6 }) {
+      Text(this.askReason() !== '' ? this.askReason()
+        : '工具 ' + this.askToolName() + ' 请求越权执行')
+        .fontSize(14)
+        .fontColor(this.t().textPrimary)
+        .lineHeight(21)
+      Text(this.askToolName())
+        .fontSize(11)
+        .fontColor(this.t().termText)
+        .fontFamily('monospace')
+        .padding({ left: 8, right: 8, top: 3, bottom: 3 })
+        .borderRadius(6)
+        .backgroundColor(this.t().termBg)
+        .alignSelf(ItemAlign.Start)
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+  }
+
+  /** 单题块：标题 + 说明 + 选项 + 自定义输入 + 跳过。 */
+  @Builder
+  askQuestionBlock(q: QuestionVm, qi: number) {
+    Column({ space: 8 }) {
+      if (q.header !== '') {
+        Text(q.header)
+          .fontSize(10)
+          .fontWeight(FontWeight.Medium)
+          .fontColor(this.t().accent)
+          .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+          .borderRadius(6)
+          .backgroundColor(this.t().navActiveBg)
+          .alignSelf(ItemAlign.Start)
+      }
+      Text(q.question)
+        .fontSize(15)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.t().textPrimary)
+        .lineHeight(22)
+        .width('100%')
+      if (q.detail !== '' && !q.planReview) {
+        Text(q.detail)
+          .fontSize(12)
+          .fontColor(this.t().textSecondary)
+          .lineHeight(18)
+          .width('100%')
+      }
+      if (q.planReview) {
+        Text(q.detail)
+          .fontSize(13)
+          .fontColor(this.t().textPrimary)
+          .lineHeight(21)
+          .width('100%')
+          .padding(12)
+          .borderRadius(10)
+          .backgroundColor(this.t().navActiveBg)
+      }
+      if (this.isSkipped(qi)) {
+        Row({ space: 8 }) {
+          Text('此题已跳过')
+            .fontSize(12)
+            .fontColor(this.t().textTertiary)
+          Text('撤销')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.t().accent)
+            .onClick(() => {
+              this.toggleAskSkip(qi);
+            })
+        }
+        .width('100%')
+      } else {
+        ForEach(q.options, (opt: QuestionOptionVm, oi: number) => {
+          this.askOptionRow(q, qi, oi)
+        }, (opt: QuestionOptionVm, oi: number) => qi + '-' + oi + '-' + opt.label)
+        TextInput({ text: qi < this.askDraftCustom.length ? this.askDraftCustom[qi] : '', placeholder: '输入你的答案…' })
+          .width('100%')
+          .height(40)
+          .fontSize(13)
+          .fontColor(this.t().textPrimary)
+          .placeholderColor(this.t().textTertiary)
+          .backgroundColor(this.t().navActiveBg)
+          .borderRadius(12)
+          .padding({ left: 12, right: 12 })
+          .onChange((v: string) => {
+            this.draftAskCustom(qi, v);
+          })
+        Text('跳过此题')
+          .fontSize(12)
+          .fontColor(this.t().textTertiary)
+          .alignSelf(ItemAlign.Start)
+          .onClick(() => {
+            this.toggleAskSkip(qi);
+          })
+      }
+    }
+    .width('100%')
+    .alignItems(HorizontalAlign.Start)
+    .opacity(this.isSkipped(qi) ? 0.6 : 1)
+  }
+
+  /** 选项行：单选圆点 / 多选方框，label 加粗，说明次级色。 */
+  @Builder
+  askOptionRow(q: QuestionVm, qi: number, oi: number) {
+    Row({ space: 10 }) {
+      if (q.multiSelect) {
+        Column() {
+          Text(this.isPicked(qi, q.options[oi].label) ? '✓' : '')
+            .fontSize(11)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(this.t().onAccent)
+        }
+        .width(18)
+        .height(18)
+        .borderRadius(5)
+        .justifyContent(FlexAlign.Center)
+        .backgroundColor(this.isPicked(qi, q.options[oi].label) ? this.t().accent : Color.Transparent)
+        .border({ width: 1.5, color: this.isPicked(qi, q.options[oi].label) ? this.t().accent : this.t().border })
+      } else {
+        Column()
+          .width(16)
+          .height(16)
+          .borderRadius(8)
+          .backgroundColor(this.isPicked(qi, q.options[oi].label) ? this.t().accent : Color.Transparent)
+          .border({ width: 1.5, color: this.isPicked(qi, q.options[oi].label) ? this.t().accent : this.t().border })
+      }
+      Column({ space: 2 }) {
+        Row({ space: 6 }) {
+          Text(q.options[oi].label)
+            .fontSize(14)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.t().textPrimary)
+          if (q.options[oi].label.indexOf('Recommended') >= 0 || q.options[oi].label.indexOf('推荐') >= 0) {
+            Text('推荐')
+              .fontSize(9)
+              .fontColor(this.t().accent)
+              .padding({ left: 5, right: 5, top: 1, bottom: 1 })
+              .borderRadius(5)
+              .backgroundColor(this.t().navActiveBg)
+          }
+        }
+        if (q.options[oi].description !== '') {
+          Text(q.options[oi].description)
+            .fontSize(11)
+            .fontColor(this.t().textSecondary)
+            .lineHeight(16)
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+    }
+    .width('100%')
+    .alignItems(VerticalAlign.Top)
+    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+    .borderRadius(12)
+    .backgroundColor(this.isPicked(qi, q.options[oi].label) ? this.t().navActiveBg : Color.Transparent)
+    .border({ width: 1, color: this.isPicked(qi, q.options[oi].label) ? this.t().accent : this.t().border })
+    .onClick(() => {
+      this.toggleAskPick(qi, q.options[oi].label);
+    })
+  }
+
+  /** 普通提问组脚部：放弃 / 去网页处理 / 提交。 */
+  @Builder
+  askQuestionsFooter() {
+    Text('放弃')
+      .fontSize(13)
+      .fontColor(this.t().textSecondary)
+      .padding({ top: 8, bottom: 8, left: 12, right: 12 })
+      .onClick(() => {
+        this.dismissAsk();
+      })
+    Blank()
+    Text('去网页处理')
+      .fontSize(13)
+      .fontColor(this.t().textTertiary)
+      .padding({ top: 8, bottom: 8, left: 10, right: 10 })
+      .onClick(() => {
+        this.delegateAsk();
+      })
+    Text(this.askSubmitting ? '提交中…' : '提交回答')
+      .fontSize(13)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.t().onAccent)
+      .padding({ top: 8, bottom: 8, left: 16, right: 16 })
+      .borderRadius(10)
+      .backgroundColor(this.askSubmitting ? this.t().textTertiary : this.t().accent)
+      .onClick(() => {
+        this.submitAsk();
+      })
+  }
+
+  /** 计划审批脚部：放弃 / 拒绝（可选） / 确认执行。 */
+  @Builder
+  askPlanFooter() {
+    Text('放弃')
+      .fontSize(13)
+      .fontColor(this.t().textSecondary)
+      .padding({ top: 8, bottom: 8, left: 12, right: 12 })
+      .onClick(() => {
+        this.dismissAsk();
+      })
+    Blank()
+    if (this.planDeclineLabel() !== '') {
+      Text(this.planDeclineLabel())
+        .fontSize(13)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.t().textPrimary)
+        .padding({ top: 8, bottom: 8, left: 14, right: 14 })
+        .borderRadius(10)
+        .border({ width: 1, color: this.t().border })
+        .onClick(() => {
+          this.answerPlan(this.planDeclineLabel());
+        })
+    }
+    Text(this.askSubmitting ? '提交中…' : '确认执行')
+      .fontSize(13)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.t().onAccent)
+      .padding({ top: 8, bottom: 8, left: 16, right: 16 })
+      .borderRadius(10)
+      .backgroundColor(this.askSubmitting ? this.t().textTertiary : this.t().accent)
+      .onClick(() => {
+        this.answerPlan(this.planApproveLabel());
+      })
+  }
+
+  /** 工具审批脚部：拒绝 / 允许一次 / 去网页处理。 */
+  @Builder
+  askApprovalFooter() {
+    Text('去网页处理')
+      .fontSize(13)
+      .fontColor(this.t().textTertiary)
+      .padding({ top: 8, bottom: 8, left: 10, right: 10 })
+      .onClick(() => {
+        this.delegateAsk();
+      })
+    Blank()
+    Text('拒绝')
+      .fontSize(13)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.t().textPrimary)
+      .padding({ top: 8, bottom: 8, left: 14, right: 14 })
+      .borderRadius(10)
+      .border({ width: 1, color: this.t().border })
+      .onClick(() => {
+        this.answerApproval('rejected');
+      })
+    Text(this.askSubmitting ? '提交中…' : '允许一次')
+      .fontSize(13)
+      .fontWeight(FontWeight.Medium)
+      .fontColor(this.t().onAccent)
+      .padding({ top: 8, bottom: 8, left: 16, right: 16 })
+      .borderRadius(10)
+      .backgroundColor(this.askSubmitting ? this.t().textTertiary : this.t().accent)
+      .onClick(() => {
+        this.answerApproval('allowed-once');
+      })
   }
 
   @Builder

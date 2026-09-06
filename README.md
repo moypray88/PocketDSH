@@ -24,6 +24,7 @@
 - **对话历史**：完整事件流渲染——用户气泡、AI 卡片（思考过程/正文/用量）、工具调用（参数+终端风结果）、轮次徽章、时间线圆点导轨
 - **WebSocket 逐字流**：真打字机效果——`/api/remote.mux` 复用通道 + `session/follow` 实时事件，正文/思考过程逐字渲染，断线自动重连（snapshot 补缺口），轮询仅作兜底
 - **发送任务**：乐观回显（秒显）→ 实时事件驱动回复；支持 **图片附件**（base64 直嵌）
+- **dsh 提问/审批弹卡**：dsh 执行中向你提问或请求工具授权时（`$events` 事件流），对话页输入区上方弹出卡片——选项单选/多选、自定义文本、跳过、计划审批（确认执行/拒绝）、工具审批（允许一次/拒绝）；不在该会话时首页/其他页顶部横幅提示，点击直达；也可「去网页处理」让位给 web 控制台（多端竞速，先答者胜）
 - **模型切换**：顶栏胶囊一键拉取服务器模型目录并切换
 - **新建任务**：草稿式页面（不输入不创建会话），支持选择工作目录（默认/最近使用/自定义）
 - **折叠适配**：展开态双栏（左栏可收起最大化对话）+ 合盖态单栏两级导航，侧滑返回逐层回退
@@ -45,11 +46,12 @@
 ## 架构一览
 
 ```
-UI 层        Index(外壳/返回协调) · 首页 · 会话+对话 · 设置 · 引导 · WebView完整版
+UI 层        Index(外壳/返回协调/交互横幅) · 首页 · 会话+对话 · 设置 · 引导 · WebView完整版
 服务层       DshApiClient(RPC+认证自愈) · DshStreamClient(WS 逐字流) ·
+             DshEventClient(dsh 提问/审批事件流) ·
              SessionsRepository(解析) · ConfigStore · SecureStore(资产库) · HealthMonitor
 基础         Theme 双主题令牌 · MdParser 轻量 Markdown · 视图模型契约
-服务器       nginx(Basic Auth) → dsh web（RPC + WS mux + 令牌/Cookie 认证）
+服务器       nginx(Basic Auth) → dsh web（RPC + WS mux + $events 事件流 + 令牌/Cookie 认证）
 ```
 
 详细分层、协议契约、ADR 决策记录 → **[design/ARCHITECTURE.md](design/ARCHITECTURE.md)**
@@ -94,15 +96,17 @@ sudo journalctl -u dsh-web.service --no-pager | grep -oh 'https\?://[^ ]*token=[
 
 ```
 entry/src/main/ets/
-├── pages/Index.ets          外壳：4 Tab、折叠断点、返回深度协调
+├── pages/Index.ets          外壳：4 Tab、折叠断点、返回深度协调、dsh 待回答横幅
 ├── views/
-│   ├── WorkspaceChatView    会话列表 + 对话（主力，最大文件）
+│   ├── WorkspaceChatView    会话列表 + 对话（主力，最大文件，含提问/审批卡片）
 │   ├── HomeView             连接中心首页
 │   ├── OnboardingView       三步引导
 │   ├── SettingsView         设置
 │   └── WorkspaceView        WebView 完整版控制台（备用）
 ├── service/
 │   ├── DshApiClient         RPC 客户端（信封/Cookie 四源/401 自愈）
+│   ├── DshStreamClient      WS 逐字流（session/follow）
+│   ├── DshEventClient       dsh 主动交互流（$events：提问/审批 waterfall + 回执）
 │   ├── DshSessionsRepository  wire→视图模型（三层 null 防御）
 │   ├── DshConfigStore       偏好持久化 + 本机隐藏
 │   ├── SecureStore          系统资产库加密存储
@@ -123,7 +127,7 @@ design/                      视觉稿源文件 + ARCHITECTURE.md + 图标预览
 - 服务器 JSON 有大量显式 `null`——判空必须 undefined/null 双防
 - `@ohos.net.http`：POST body 放 `extraData`；`maxRedirects:0` 会抛异常
 - Scroll 无界高度里禁用 `alignSelf(Stretch)` / `height('100%')`（行高会被撑爆）
-- dsh 协议：发送只用 `session/prompt`（`commands/execute` 是假通道）；用户消息只渲染 `source.kind==='user'`；流式走 WS `/api/remote.mux` + `session/follow`（见 ARCHITECTURE.md §3.5）
+- dsh 协议：发送只用 `session/prompt`（`commands/execute` 是假通道）；用户消息只渲染 `source.kind==='user'`；流式走 WS `/api/remote.mux` + `session/follow`（见 ARCHITECTURE.md §3.5）；提问/审批走同一 mux 的 `$events` 流 + `$events/result` 回执（见 ARCHITECTURE.md §3.6）
 
 ---
 

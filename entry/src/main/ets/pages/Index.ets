@@ -4,7 +4,9 @@ import { WorkspaceChatView } from '../views/WorkspaceChatView';
 import { SettingsView } from '../views/SettingsView';
 import { OnboardingView } from '../views/OnboardingView';
 import { ThemeColors, ThemeManager } from '../theme/Theme';
-import { KEY_CONFIG_READY, KEY_CUR_TAB } from '../model/DshTypes';
+import { DshEventClient } from '../service/DshEventClient';
+import { PendingAskVm } from '../model/SessionVms';
+import { KEY_ASK_JUMP_ID, KEY_ASK_JUMP_TICK, KEY_ASK_TICK, KEY_CHAT_SELECTED_ID, KEY_CONFIG_READY, KEY_CUR_TAB } from '../model/DshTypes';
 
 enum TabId {
   Sessions = 0,
@@ -18,14 +20,94 @@ enum TabId {
 @Component
 struct Index {
   @StorageProp('themeIsDark') dark: boolean = true;
-  @StorageProp(KEY_CONFIG_READY) configReady: boolean = false;
+  @StorageProp(KEY_CONFIG_READY) @Watch('onConfigReadyChanged') configReady: boolean = false;
   /** 底部系统导航条避让高度（px），底栏据此垫底。 */
   @StorageProp('bottomAvoidPx') bottomAvoidPx: number = 0;
+  /** dsh 待回答交互：非当前会话的问题以横幅提示，点击跳转。 */
+  @StorageProp(KEY_ASK_TICK) @Watch('onAskTick') askTick: number = 0;
+  @StorageProp(KEY_CHAT_SELECTED_ID) @Watch('onAskTick') chatSelectedId: string = '';
+  @State bannerAsk: PendingAskVm | null = null;
+  /** 本机点了 ✕ 的横幅（内存态，仅隐藏提示不改服务器状态）。 */
+  @State hiddenAskEventIds: string[] = [];
   @State cur: TabId = TabId.Home;
   @State expanded: boolean = true;
 
   private t(): ThemeColors {
     return ThemeManager.palette(this.dark);
+  }
+
+  aboutToAppear(): void {
+    if (this.configReady) {
+      DshEventClient.start(getContext(this));
+    }
+  }
+
+  /** 登录态建立 → 启动全局事件流；清除配置 → 停止。 */
+  private onConfigReadyChanged(): void {
+    if (this.configReady) {
+      DshEventClient.start(getContext(this));
+    } else {
+      DshEventClient.stop();
+      this.bannerAsk = null;
+    }
+  }
+
+  /** 重算横幅：跳过已隐藏项与当前对话页正在展示的项。 */
+  private onAskTick(): void {
+    const all: PendingAskVm[] = DshEventClient.pendingAsks();
+    let found: PendingAskVm | null = null;
+    for (let i: number = 0; i < all.length; i++) {
+      const a: PendingAskVm = all[i];
+      if (this.hiddenAskEventIds.indexOf(a.eventId) >= 0) {
+        continue;
+      }
+      if (this.cur === TabId.Sessions && a.sessionId === this.chatSelectedId) {
+        continue;
+      }
+      found = a;
+      break;
+    }
+    this.bannerAsk = found;
+  }
+
+  /** 横幅点击：切到会话 Tab 并打开目标会话。 */
+  private jumpToAsk(): void {
+    const ask: PendingAskVm | null = this.bannerAsk;
+    if (ask === null) {
+      return;
+    }
+    AppStorage.setOrCreate(KEY_ASK_JUMP_ID, ask.sessionId);
+    const t: number = AppStorage.get<number>(KEY_ASK_JUMP_TICK) ?? 0;
+    AppStorage.setOrCreate(KEY_ASK_JUMP_TICK, t + 1);
+    this.switchTab(TabId.Sessions);
+  }
+
+  /** 横幅 ✕：仅本机隐藏该条提示。 */
+  private hideBanner(): void {
+    const ask: PendingAskVm | null = this.bannerAsk;
+    if (ask === null) {
+      return;
+    }
+    this.hiddenAskEventIds = this.hiddenAskEventIds.concat([ask.eventId]);
+    this.onAskTick();
+  }
+
+  /** 横幅摘要文案。 */
+  private bannerText(): string {
+    const ask: PendingAskVm | null = this.bannerAsk;
+    if (ask === null) {
+      return '';
+    }
+    if (ask.kind === 'approval') {
+      return ask.reason !== '' ? ask.reason : '工具 ' + ask.toolName + ' 请求越权执行';
+    }
+    if (ask.questions.length === 1 && ask.questions[0].planReview) {
+      return '有一份计划待你审批';
+    }
+    const first: string = ask.questions.length > 0 ? ask.questions[0].question : '';
+    const more: string = ask.questions.length > 1 ? '（共 ' + ask.questions.length + ' 题）' : '';
+    const text: string = first.length > 42 ? first.substring(0, 42) + '…' : first;
+    return text + more;
   }
 
   /** 系统侧滑/返回键：有二级层级时逐层回退，没有才允许退出应用。 */
@@ -118,6 +200,57 @@ struct Index {
         .width('100%')
         .height('100%')
       }
+
+      // dsh 待回答交互横幅：覆盖在内容层之上，容器透传触摸（只有横幅本体可点）
+      if (this.configReady && this.bannerAsk !== null) {
+        Column() {
+          Row({ space: 10 }) {
+            Column()
+              .width(8)
+              .height(8)
+              .borderRadius(4)
+              .backgroundColor(this.bannerAsk.kind === 'approval' ? this.t().warn : this.t().accent2)
+            Column({ space: 2 }) {
+              Text('dsh 等你回答')
+                .fontSize(10)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(this.t().accent)
+              Text(this.bannerText())
+                .fontSize(13)
+                .fontColor(this.t().textPrimary)
+                .maxLines(2)
+                .lineHeight(18)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+            Text('›')
+              .fontSize(18)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.t().textTertiary)
+            Text('✕')
+              .fontSize(13)
+              .fontColor(this.t().textTertiary)
+              .padding(6)
+              .onClick(() => {
+                this.hideBanner();
+              })
+          }
+          .width('100%')
+          .padding({ left: 14, right: 8, top: 10, bottom: 10 })
+          .borderRadius(14)
+          .backgroundColor(this.t().bgCard)
+          .border({ width: 1, color: this.t().accent2 })
+          .onClick(() => {
+            this.jumpToAsk();
+          })
+        }
+        .width('100%')
+        .height('100%')
+        .alignItems(HorizontalAlign.Start)
+        .padding({ left: 12, right: 12, top: 10 })
+        .hitTestBehavior(HitTestMode.Transparent)
+      }
     }
     .width('100%')
     .height('100%')
@@ -163,6 +296,7 @@ struct Index {
   private switchTab(id: TabId): void {
     this.cur = id;
     AppStorage.setOrCreate(KEY_CUR_TAB, Number(id));
+    this.onAskTick();
   }
 
   /** 请求工作台新建会话（首页"新建任务"/侧栏"新建对话"共用入口）。 */

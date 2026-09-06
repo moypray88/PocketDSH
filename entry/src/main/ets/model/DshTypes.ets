@@ -56,3 +56,11 @@ export const TAB_SESSIONS: number = 0
 
 /** 跨页信号：本机隐藏集被设置页改动（全部恢复），工作台需重载 hiddenIds。 */
 export const KEY_HIDDEN_TICK: string = 'hiddenTick'
+
+/** dsh 主动交互（提问/审批）：DshEventClient 列表变更时 +1，视图重读 pending 列表。 */
+export const KEY_ASK_TICK: string = 'askTick'
+/** 工作台当前选中会话 ID（工作台写入；全局横幅据此判断问题是否已在对话页可见）。 */
+export const KEY_CHAT_SELECTED_ID: string = 'chatSelectedId'
+/** 跨页跳转会话请求（全局横幅点击下发）：askJumpId 携带目标会话。 */
+export const KEY_ASK_JUMP_ID: string = 'askJumpId'
+export const KEY_ASK_JUMP_TICK: string = 'askJumpTick'
