@@ -22,7 +22,8 @@
 ### 💬 原生工作台（主力体验）
 - **会话列表**：服务器真实会话、搜索、运行状态呼吸点、相对时间、长按重命名（服务器级）/本机隐藏
 - **对话历史**：完整事件流渲染——用户气泡、AI 卡片（思考过程/正文/用量）、工具调用（参数+终端风结果）、轮次徽章、时间线圆点导轨
-- **发送任务**：乐观回显（秒显）→ 静默增量追踪回复；支持 **图片附件**（base64 直嵌）；"dsh 正在输入…"生成指示
+- **WebSocket 逐字流**：真打字机效果——`/api/remote.mux` 复用通道 + `session/follow` 实时事件，正文/思考过程逐字渲染，断线自动重连（snapshot 补缺口），轮询仅作兜底
+- **发送任务**：乐观回显（秒显）→ 实时事件驱动回复；支持 **图片附件**（base64 直嵌）
 - **模型切换**：顶栏胶囊一键拉取服务器模型目录并切换
 - **新建任务**：草稿式页面（不输入不创建会话），支持选择工作目录（默认/最近使用/自定义）
 - **折叠适配**：展开态双栏（左栏可收起最大化对话）+ 合盖态单栏两级导航，侧滑返回逐层回退
@@ -45,10 +46,10 @@
 
 ```
 UI 层        Index(外壳/返回协调) · 首页 · 会话+对话 · 设置 · 引导 · WebView完整版
-服务层       DshApiClient(RPC+认证自愈) · SessionsRepository(解析) ·
-             ConfigStore · SecureStore(资产库) · HealthMonitor
+服务层       DshApiClient(RPC+认证自愈) · DshStreamClient(WS 逐字流) ·
+             SessionsRepository(解析) · ConfigStore · SecureStore(资产库) · HealthMonitor
 基础         Theme 双主题令牌 · MdParser 轻量 Markdown · 视图模型契约
-服务器       nginx(Basic Auth) → dsh web（RPC + 令牌/Cookie 认证）
+服务器       nginx(Basic Auth) → dsh web（RPC + WS mux + 令牌/Cookie 认证）
 ```
 
 详细分层、协议契约、ADR 决策记录 → **[design/ARCHITECTURE.md](design/ARCHITECTURE.md)**
@@ -122,13 +123,13 @@ design/                      视觉稿源文件 + ARCHITECTURE.md + 图标预览
 - 服务器 JSON 有大量显式 `null`——判空必须 undefined/null 双防
 - `@ohos.net.http`：POST body 放 `extraData`；`maxRedirects:0` 会抛异常
 - Scroll 无界高度里禁用 `alignSelf(Stretch)` / `height('100%')`（行高会被撑爆）
-- dsh 协议：发送只用 `session/prompt`（`commands/execute` 是假通道）；用户消息只渲染 `source.kind==='user'`
+- dsh 协议：发送只用 `session/prompt`（`commands/execute` 是假通道）；用户消息只渲染 `source.kind==='user'`；流式走 WS `/api/remote.mux` + `session/follow`（见 ARCHITECTURE.md §3.5）
 
 ---
 
 ## 路线图
 
-- [ ] WebSocket 逐字流（打字机效果，替代轮询）
+- [x] ~~WebSocket 逐字流（打字机效果，替代轮询）~~ ✅ 已实现（ADR-8 升级，见 ARCHITECTURE.md §3.5）
 - [x] ~~图片附件~~ · ~~模型切换~~ · ~~停止生成~~ · ~~重命名~~ · ~~草稿式新建+工作目录~~ · ~~Cookie 持久化~~ · ~~到期提醒~~ · ~~Markdown 表格/链接~~
 - [ ] 会话搜索 / fork（协议已确认）
 - [ ] 图片在历史消息中的内联渲染

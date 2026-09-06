@@ -4,7 +4,7 @@ import { WorkspaceChatView } from '../views/WorkspaceChatView';
 import { SettingsView } from '../views/SettingsView';
 import { OnboardingView } from '../views/OnboardingView';
 import { ThemeColors, ThemeManager } from '../theme/Theme';
-import { KEY_CONFIG_READY } from '../model/DshTypes';
+import { KEY_CONFIG_READY, KEY_CUR_TAB } from '../model/DshTypes';
 
 enum TabId {
   Sessions = 0,
@@ -159,11 +159,17 @@ struct Index {
     .margin({ bottom: 18 })
   }
 
+  /** 切换 Tab：同步到 AppStorage，常驻的子视图（工作台等）据此感知页面显隐并刷新数据。 */
+  private switchTab(id: TabId): void {
+    this.cur = id;
+    AppStorage.setOrCreate(KEY_CUR_TAB, Number(id));
+  }
+
   /** 请求工作台新建会话（首页"新建任务"/侧栏"新建对话"共用入口）。 */
   private requestNewChat(): void {
     const t = AppStorage.get<number>('chatCreateTick') ?? 0;
     AppStorage.setOrCreate('chatCreateTick', t + 1);
-    this.cur = TabId.Sessions;
+    this.switchTab(TabId.Sessions);
   }
 
   @Builder
@@ -182,7 +188,7 @@ struct Index {
     .borderRadius(12)
     .backgroundColor(this.cur === id ? this.t().navActiveBg : Color.Transparent)
     .onClick(() => {
-      this.cur = id;
+      this.switchTab(id);
     })
   }
 
@@ -239,10 +245,10 @@ struct Index {
       HomeView({
         coverMode: !this.expanded,
         onEnterConsole: () => {
-          this.cur = TabId.Sessions;
+          this.switchTab(TabId.Sessions);
         },
         onGoSettings: () => {
-          this.cur = TabId.Settings;
+          this.switchTab(TabId.Settings);
         },
       })
         .width('100%')
@@ -252,7 +258,7 @@ struct Index {
       WorkspaceView({
         coverMode: !this.expanded,
         onGoSettings: () => {
-          this.cur = TabId.Settings;
+          this.switchTab(TabId.Settings);
         },
       })
         .width('100%')
@@ -301,7 +307,7 @@ struct Index {
     .constraintSize({ minHeight: 30 })
     .justifyContent(FlexAlign.Center)
     .onClick(() => {
-      this.cur = id;
+      this.switchTab(id);
     })
   }
 }

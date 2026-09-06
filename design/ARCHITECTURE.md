@@ -23,6 +23,7 @@
 │  │  └ WorkspaceView   WebView 内嵌 dsh 官方控制台（备用）  │             │
 │  ├─ 服务层 ─────────────────────────────────────────────┤             │
 │  │  DshApiClient        RPC 客户端（信封/认证/自愈）      │             │
+│  │  DshStreamClient     WebSocket 逐字流（remote.mux）   │             │
 │  │  DshSessionsRepository  wire→视图模型（三层 null 防御） │             │
 │  │  DshConfigStore      偏好持久化 + 本机隐藏            │             │
 │  │  SecureStore         系统资产库加密（密码/令牌/Cookie） │             │
@@ -39,10 +40,11 @@
 │  └── /.pocketdsh/token → 令牌自动端点（已设计，暂未部署）        │
 ├──────────────────────────────────────────────────────────────┤
 │ dsh web（systemd: dsh-web.service）                          │
-│  ├── session/list · page · prompt · create · rename ·        │
-│  │   cancel · selectModel · modelCatalog                     │
+│  ├── HTTP RPC：session/list · page · prompt · create ·       │
+│  │   rename · cancel · selectModel · modelCatalog            │
+│  ├── WS 流：/api/remote.mux（复用通道，session/follow 流）    │
 │  └── 认证：?token=xxx 一次性换 30 天签名 Cookie                │
-│      （签名密钥持久化 → Cookie 跨重启有效）                     │
+│      （签名密钥持久化 → Cookie 跨重启有效；WS 握手同源同凭证）  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -129,7 +131,38 @@ Headers: Content-Type: application/json
 | `session/rename` | `request` | `{sessionId,title}` | 服务器级重命名 |
 | ~~`commands/execute`~~ | 裸 | `{agentId,line,images}` | ⚠️ **陷阱：TUI 壳命令通道，返回 ok 但消息不进对话** |
 
-未接入已发现：`session/search`、`session/fork`、`session/attachment`（图片可 base64 直嵌，暂不需要）、`follow`/`control`（stream 模式，WebSocket 逐字流的入口）。
+未接入已发现：`session/search`、`session/fork`、`session/attachment`（图片可 base64 直嵌，暂不需要）。
+
+### 3.5 WebSocket 流式协议（remote.mux，全部实测）✅
+
+**入口**：`wss://{authority}/api/remote.mux`；握手头 = Basic Auth + dsh-auth Cookie + Origin（nginx 直接放行 WS Upgrade，实测通过）。服务端有 WS 心跳 ping，空闲连接不会被 nginx 切断。
+
+**复用帧**（JSON 文本帧，一连接多逻辑流，streamId 客户端生成）：
+
+| 方向 | 帧 |
+|---|---|
+| C→S | `{"type":"open","streamId":S,"endpoint":"session/follow","payload":{"args":{"request":{"address":{"kind":"session","sessionId":ID},"maxMessages":50,"assistantStream":true}}}}` |
+| C→S | `{"type":"cancel","streamId":S}` |
+| S→C | `{"type":"item","streamId":S,"value":<见下>}` / `{"type":"end",...}` / `{"type":"error",...,"error":{code,message,details}}` |
+
+**item.value 三态**（session/follow 流）：
+
+1. `snapshot`：`{header, cursor, records, hasMore, projections, assistantStream?}`——开仓快照，cursor 即当前游标（= page 的 throughSeq 上限）；records 与 `session/page` 同构（可复用解析管线）
+2. `{type:'event', event}`：持久事件实时推送（gap-free，与历史同 wire）
+3. `{type:'assistant-stream', frame}`：v2 服务器活帧（本服务器为 v1，不会出现；客户端已做向前兼容）
+
+**v1 服务器的实时 chunk 语义（打字机数据源，实测）**：生成期间每个增量都是持久事件 `assistant/chunk`，`data.chunk` 形态：
+- `{type:'block-start', index, blockType:'reasoning'|'text'}` 开块
+- `{type:'text-delta'|'reasoning-delta', index, text}` 逐词增量
+- `{type:'block-end', index, block:{type,text}}` 权威整块回填
+- `{type:'usage', usage:{inputTokens,outputTokens,…}}`、`{type:'finish', reason}` 控制
+
+结算链：`assistant/message`（surfaceOp:'append'）→ `step/end` → `turn/end`。**turn/end 是"生成彻底终止"信号**。轮次完成后服务器把 chunk 事件压缩成 `chunkrow/text-chunks`、`chunkrow/reasoning-chunks` 行（`{turn,step,index,dt[],texts[]}`，texts 拼接即整块），快照/历史里看到的是压缩行。
+
+**PocketDSH 消费模型**（`DshStreamClient`）：
+- 断线自动重连（1.5s 指数退避至 15s），重连后 snapshot 重放补缺口；重放期间增量暂存，按"chunk seq > 内容 seq"判定生成仍在进行才交付（旧轮次重放不闪 UI）
+- view 按 seq 去重：user/message 追加气泡并清乐观回显；delta 追加流式缓冲（80ms 节流 flush + 贴底）；block-end 以权威内容替换缓冲；assistant/message 结算转正条目并清流式卡；turn/end 清空 typing
+- 流健康时 `pollAfterSend` 直接跳过；流断开回调触发轮询兜底，恢复后无缝衔接（seq 去重）
 
 ### 3.3 历史事件流（session/page records）
 
@@ -159,12 +192,13 @@ Headers: Content-Type: application/json
 
 | 文件 | 职责 | 关键设计 |
 |---|---|---|
-| `service/DshApiClient.ets` | RPC 客户端 | 信封构造（args 包装三形态）；Cookie 四源获取；**401 自愈**（同请求重试一次）；头组合变体重试（带/不带 Origin）；`DshApiClientError(code,message)`；自动令牌端点兜底；`clearCookie()` 同步清内存+异步清持久层；`cookieDaysLeft()` |
+| `service/DshApiClient.ets` | RPC 客户端 | 信封构造（args 包装三形态）；Cookie 四源获取；**401 自愈**（同请求重试一次）；头组合变体重试（带/不带 Origin）；`DshApiClientError(code,message)`；自动令牌端点兜底；`clearCookie()` 同步清内存+异步清持久层；`cookieDaysLeft()`；`wsConnectInfo()`（WS 握手头出口） |
+| `service/DshStreamClient.ets` | **WebSocket 逐字流** | `/api/remote.mux` 单连接复用 + `session/follow`；断线指数退避重连 + snapshot 重放补缺口；chunk 归一化（block-start/delta/block-end/usage）；v1 持久 chunk 事件与 v2 assistant-stream 活帧双兼容；重放缓冲按 generating 判定交付；监听器回调（seq 语义与历史一致）；`fetchWorkspaceFollowBaseline` 临时连接一次性拉工作区基线（列表分组/归档过滤数据源，60s 缓存） |
 | `service/DshSessionsRepository.ets` | wire→VM | **三层 null 防御**（信封层/解析层/单条跳过）；伪用户消息过滤；空壳 assistant 帧跳过；`generating` 判定；游标反查（past-cursor 正则）；sendText 支持图片 part |
 | `service/DshConfigStore.ets` | 持久化 | preferences `dsh_config`（server/username/theme/onboarded/hiddenSessions/cookieMintedAt）+ 资产库密钥代理；`normalizeServerUrl` |
 | `service/SecureStore.ets` | 加密存储 | `@ohos.security.asset`；别名：password / token URL / session cookie；读失败一律返回 ''（不抛） |
 | `service/HealthMonitor.ets` | 探针 | Basic Auth GET，任意响应=在线；200 ok / 401 auth-required |
-| `views/WorkspaceChatView.ets` | 主力页面 | 会话列表（搜索/长按菜单[重命名/本机隐藏]）+ 对话（导轨圆点时间线/三级折叠/Markdown/模型浮层/乐观回显/typing 指示/静默追踪）+ 草稿式新任务（延迟创建+工作目录选择）+ 返回深度 `chatBackDepth` |
+| `views/WorkspaceChatView.ets` | 主力页面 | 会话列表（搜索/长按菜单[重命名/本机隐藏]/Tab 显隐+30s 静默刷新[ADR-11]）+ 对话（导轨圆点时间线/三级折叠/Markdown/模型浮层/乐观回显/**WS 流式打字机卡**）+ 草稿式新任务（延迟创建+工作目录选择）+ 返回深度 `chatBackDepth`；流健康时免轮询，断流自动降级轮询 |
 | `views/HomeView.ets` | 首页 | 缓存秒显（AppStorage homeXxxCache）+ 静默定时刷新（数据变化才写状态）+ 到期预警 + 快捷任务（预填工作台输入框） |
 | `views/OnboardingView.ets` | 引导 | 三步；令牌真实校验（GET 令牌 URL，401 时按响应体区分 dsh 令牌错误 vs nginx 密码错误）；自动获取令牌按钮；`onbStep` 同步支持侧滑回退 |
 | `views/SettingsView.ets` | 设置 | 主题三选（matchMedia 系统深浅）；令牌重贴（**同时清 WebView Cookie + 原生内存 Cookie**）；隐藏会话恢复；完整版入口；危险区 wipe |
@@ -189,9 +223,10 @@ Headers: Content-Type: application/json
 | ADR-5 | **三层 null 防御** | 服务器 JSON 大量显式 `null`（如 `modelSelection.lastUsed: null`）；undefined 判空不够。信封层/解析层/单条跳过——单条坏数据绝不放大为整页失败 |
 | ADR-6 | **返回深度协调**（无路由栈） | 单 @Entry + 组件树切换，系统侧滑默认退出 APP。子组件同步深度到 AppStorage，`onBackPress` 消费式逐层弹出 |
 | ADR-7 | **双通道认证一致性** | WebView（完整版）与原生 HTTP 各有 Cookie；重贴令牌/清除数据时两通道同步失效，避免状态分裂 |
-| ADR-8 | **流式 lite 而非 WebSocket** | chunk wire 格式埋藏深、WS 网关协议未逆向；用 `generating` 指示 + 高频轮询达到近似体验，真逐字流留待独立攻关 |
+| ADR-8 | **流式升级为 WebSocket，轮询降级为兜底**（v1 原决策"流式 lite"已被取代） | chunk wire 格式已逆向（源码级 + 真机实测）：`/api/remote.mux` mux 帧 + `session/follow`；打字机体验是质变（逐词 vs 2.5s 轮询）。轮询保留兜底（断流/竞态），seq 去重保证两路无缝。v1 服务器实时 chunk 是持久事件，v2 的 assistant-stream 活帧已做向前兼容 |
 | ADR-9 | **图标程序化生成** | 内置浏览器大视口截图不稳定；Node 内 zlib 手写 PNG 编码器 + 像素数学，确定性输出可复现 |
 | ADR-10 | **自动令牌端点：已设计、缓部署** | Cookie 持久化后其唯一价值=30 天一次的手动续期；安全边际（密码≈全权门票）不划算。到货提醒（ADR 见到期预警）替代 |
+| ADR-11 | **会话列表新鲜度 + 工作区分组（web 侧边栏同构）** | 工作台组件常驻（Index 只切 Visibility），`aboutToAppear` 仅启动时执行一次——web/PC 端新建的会话此前永远进不了手机列表（"手机会话不全"根因）。修复：Index 切 Tab 下发 `curTab`，工作台 @Watch 静默重拉；30s 定时器在列表页也静默刷新（失败且已有数据不闪错误态）；`session/list` 的 `blank` 项与 web 端一致过滤。列表结构对齐 web「工作区」：`workspace/follow` 流首帧 baseline（DshStreamClient 临时 WS 连接一次性拉取 + 60s 缓存）给出工作区表与 `archivedSessionIds`——按工作区分组渲染（成员按注册表手动排序、未分组按 recency 殿后、点头部折叠），归档会话各端一致隐藏；基线不可用时退化为平铺富信息行 |
 
 ---
 
@@ -212,6 +247,9 @@ Headers: Content-Type: application/json
 - **Scroll 无界高度容器内禁止 `alignSelf(Stretch)` / `height('100%')`**——行高被解析到视口级 = 每行一屏高的"大空隙"（时间线连线因此改为纯圆点）
 - 百分比 maxWidth + 内容自适应宽 = 宽度循环依赖 → 展开大屏文字溢出（卡片用定宽 100%）
 - 系统 JSON-RPC 边界对字段**逐字校验**：多一层包装、字段名大小写、驼峰/短横线都会 400（`gateway/arguments-invalid` / `input-invalid`）
+- **WS 握手**：`@ohos.net.webSocket` 的 `WebSocketRequestOptions.header` 支持 Authorization/Cookie/Origin 自定义头（wss 同源同凭证）；'error' 与 'close' 可能连发，回调里用 socket 身份比对防重复调度；流级 `end`/`error` 帧要当作断线处理（重连后 snapshot 补缺口）
+- **WS 流式竞态**：轮询 chase 会用 `generating` 覆盖 typing——流健康时必须跳过该赋值，否则 turn/end 清指示后又被轮询置回（闪烁）；快照重放的旧轮次事件靠 view 层 seq 去重 + 客户端重放缓冲（generating 判定后才交付）避免 UI 闪旧内容
+- **ForEach 键**：条目对象字段原地改（如 tool.resultText 回填）不会触发重渲染——键里带上结果态（'R'+seq）让它换键重建
 
 **工具链**：
 - 构建：见 README；`DEVECO_SDK_HOME` 指向 DevEco 自带 sdk，java 用 DevEco 自带 jbr
@@ -234,7 +272,7 @@ Headers: Content-Type: application/json
 
 ## 8. 路线图（剩余）
 
-1. **WebSocket 逐字流**（大件）：逆向 `packages/api/gateway` 的 WS mux 协议 + `session/follow` stream，替换轮询
+1. ~~WebSocket 逐字流~~ ✅ **已完成**（协议契约见 §3.5；`DshStreamClient` + 流式打字机卡；轮询保留为断流兜底）
 2. 会话搜索（`session/search`）、fork（`session/fork`）
 3. 图片在历史消息中的内联渲染（现仅 🖼 标记）
 4. 自动令牌端点部署（脚本已备，按需启用）

@@ -138,10 +138,36 @@ export class DshConfigStore {
     await prefs.flush();
   }
 
+  /** 恢复单个本机隐藏的会话（设置页逐个恢复）。 */
+  static async unhideSession(ctx: common.Context, sessionId: string): Promise<void> {
+    const cur: string[] = await DshConfigStore.getHiddenSessions(ctx);
+    const idx: number = cur.indexOf(sessionId);
+    if (idx < 0) {
+      return;
+    }
+    cur.splice(idx, 1);
+    const prefs: preferences.Preferences = await DshConfigStore.open(ctx);
+    prefs.putSync('hiddenSessions', cur.join(','));
+    await prefs.flush();
+  }
+
   /** 清除全部本机隐藏记录（所有会话重新可见）。 */
   static async clearHiddenSessions(ctx: common.Context): Promise<void> {
     const prefs: preferences.Preferences = await DshConfigStore.open(ctx);
     prefs.putSync('hiddenSessions', '');
+    await prefs.flush();
+  }
+
+  /** 会话列表展示模式：0 按时间分组 / 1 按项目分组（默认）。 */
+  static async getListViewMode(ctx: common.Context): Promise<number> {
+    const prefs: preferences.Preferences = await DshConfigStore.open(ctx);
+    return prefs.getSync('listViewMode', 1) as number;
+  }
+
+  /** 保存会话列表展示模式。 */
+  static async setListViewMode(ctx: common.Context, mode: number): Promise<void> {
+    const prefs: preferences.Preferences = await DshConfigStore.open(ctx);
+    prefs.putSync('listViewMode', mode);
     await prefs.flush();
   }
 

@@ -2,7 +2,8 @@
 import common from '@ohos.app.ability.common';
 import { BusinessError } from '@ohos.base';
 import { DshApiClient, DshApiClientError } from './DshApiClient';
-import { CatalogVm, ChatEntryKind, ChatEntryVm, HistoryPageVm, ModelGroupVm, ModelItemVm, SessionSummaryVm, ToolCallVm } from '../model/SessionVms';
+import { DshStreamClient } from './DshStreamClient';
+import { CatalogVm, ChatEntryKind, ChatEntryVm, HistoryPageVm, ModelGroupVm, ModelItemVm, SessionSummaryVm, ToolCallVm, WorkspaceBaselineVm, WorkspaceVm } from '../model/SessionVms';
 
 /* ───────────── wire 形状（宽松解析；字段可缺省也可为显式 null） ───────────── */
 
@@ -11,11 +12,26 @@ interface WireSessionListValue {
   items?: WireSessionItem[];
 }
 
+/* ───────────── workspace/follow 基线 wire 形状 ───────────── */
+
+interface WireWorkspaceView {
+  workspaceId?: string;
+  path?: string;
+  title?: string;
+  sessionIds?: string[];
+}
+
+interface WireWorkspaceBaselineValue {
+  items?: WireWorkspaceView[];
+  archivedSessionIds?: string[];
+}
+
 /** session/list 单项。 */
 interface WireSessionItem {
   sessionId?: string;
   updatedAt?: number;
   running?: boolean;
+  /** 空会话（尚无任何轮次）：web 端列表不显示，仅保留当前选中的占位行。 */
   blank?: boolean;
   cwd?: string;
   /** 非空表示是 subagent 子会话：必须经父地址访问，列表中过滤掉。 */
@@ -177,6 +193,31 @@ interface WireTurnStartData {
   turn?: number;
 }
 
+/** turn/end 的 data（失败详情在 reason 里，失败轮次没有 assistant/message）。 */
+interface WireTurnEndEventData {
+  turn?: number;
+  reason?: WireTurnEndReasonData;
+}
+
+/** turn/end 的 reason：completed/blocked/max-tokens/interrupted/aborted/error。 */
+interface WireTurnEndReasonData {
+  kind?: string;
+  error?: WireLlmFailureData;
+  reason?: WireAbortCauseData;
+}
+
+/** llm 失败详情（code+message 必有，源码 llmFailureValue）。 */
+interface WireLlmFailureData {
+  code?: string;
+  message?: string;
+  status?: number;
+}
+
+/** aborted 的中止原因。 */
+interface WireAbortCauseData {
+  kind?: string;
+}
+
 /** session/create 的请求（源码类型 SessionCreateRequest：支持工作目录）。 */
 interface WireCreateRequest {
   cwd?: string;
@@ -276,6 +317,10 @@ export class DshSessionsRepository {
         if (it.parentSessionId !== undefined && it.parentSessionId !== null && it.parentSessionId !== '') {
           continue;
         }
+        // blank 会话与 web 端一致：不出现在列表（web 仅保留当前选中的新会话占位行）
+        if (it.blank === true) {
+          continue;
+        }
         // 归档会话过滤：兼容顶层 archived 与 sessionListMetadata 内的常见标记形态
         if (it.archived === true) {
           continue;
@@ -319,6 +364,57 @@ export class DshSessionsRepository {
   }
 
   /**
+   * 拉取工作区基线（workspace/follow 首帧）：工作区列表 + 全局归档集。
+   * WS 不可用时返回 null，调用方退化为平铺列表且不做归档过滤。
+   * @param force true 跳过客户端缓存强制拉取（手动 ⟳）
+   */
+  static async workspaceBaseline(ctx: common.Context, force: boolean): Promise<WorkspaceBaselineVm | null> {
+    const raw: object | null = await DshStreamClient.fetchWorkspaceFollowBaseline(ctx, force);
+    if (raw === null) {
+      return null;
+    }
+    const parsed: WireWorkspaceBaselineValue = raw as WireWorkspaceBaselineValue;
+    const workspaces: WorkspaceVm[] = [];
+    const items: WireWorkspaceView[] = parsed.items !== undefined && parsed.items !== null ? parsed.items : [];
+    for (let i: number = 0; i < items.length; i++) {
+      const it: WireWorkspaceView = items[i];
+      const wid: string = DshSessionsRepository.cleanStr(it.workspaceId);
+      if (wid === '') {
+        continue;
+      }
+      const ids: string[] = [];
+      const rawIds: string[] = it.sessionIds !== undefined && it.sessionIds !== null ? it.sessionIds : [];
+      for (let j: number = 0; j < rawIds.length; j++) {
+        const sid: string = DshSessionsRepository.cleanStr(rawIds[j]);
+        if (sid !== '') {
+          ids.push(sid);
+        }
+      }
+      const w: WorkspaceVm = {
+        workspaceId: wid,
+        title: DshSessionsRepository.cleanStr(it.title, wid),
+        path: DshSessionsRepository.cleanStr(it.path),
+        sessionIds: ids,
+      };
+      workspaces.push(w);
+    }
+    const archived: string[] = [];
+    const rawArchived: string[] = parsed.archivedSessionIds !== undefined && parsed.archivedSessionIds !== null
+      ? parsed.archivedSessionIds : [];
+    for (let i: number = 0; i < rawArchived.length; i++) {
+      const sid: string = DshSessionsRepository.cleanStr(rawArchived[i]);
+      if (sid !== '') {
+        archived.push(sid);
+      }
+    }
+    const base: WorkspaceBaselineVm = {
+      workspaces: workspaces,
+      archivedSessionIds: archived,
+    };
+    return base;
+  }
+
+  /**
    * 拉取一页历史（seq 升序）。
    * @param throughSeq 游标上限；<0 时自动反查（先发超大值，从错误信息提取真实游标）
    * @param beforeSeq 只取此 seq 之前的一页；<0 表示从最新开始
@@ -358,6 +454,9 @@ export class DshSessionsRepository {
     // 生成中判定：存在晚于最后一条 user/assistant 消息的 chunk 流事件
     let maxContentSeq: number = -1;
     let maxChunkSeq: number = -1;
+    // 最近一条 turn/end：失败轮次的 chunk 不会被压缩成 chunkrow，
+    // 若只比 chunk 与 content 的先后会把已结束（尤其失败）的轮次误判为生成中
+    let maxTurnEndSeq: number = -1;
 
     for (let i: number = 0; i < records.length; i++) {
       const rec: WireRecord = records[i];
@@ -455,13 +554,46 @@ export class DshSessionsRepository {
         const turn: number = DshSessionsRepository.cleanNum(d.turn);
         entries.push(DshSessionsRepository.entry(ChatEntryKind.Turn, seq, time, turn,
           '第 ' + turn + ' 轮', '', 0, 0, '', null));
+      } else if (type === 'turn/end') {
+        // 失败轮次没有 assistant/message，错误详情只在 turn/end 的 reason 里——
+        // 不解析的话失败在手机端完全不可见（web 端有"本轮运行失败"红条）
+        const d: WireTurnEndEventData = data as WireTurnEndEventData;
+        const reasonObj: WireTurnEndReasonData | undefined | null = d.reason;
+        let reasonKind: string = reasonObj !== undefined && reasonObj !== null
+          && reasonObj.kind !== undefined && reasonObj.kind !== null ? reasonObj.kind : 'completed';
+        let code: string = '';
+        let message: string = '';
+        if (reasonKind === 'error' && reasonObj !== undefined && reasonObj !== null) {
+          const failure: WireLlmFailureData | undefined | null = reasonObj.error;
+          if (failure !== undefined && failure !== null) {
+            code = DshSessionsRepository.cleanStr(failure.code);
+            message = DshSessionsRepository.cleanStr(failure.message);
+          }
+        } else if (reasonKind === 'aborted' && reasonObj !== undefined && reasonObj !== null
+          && reasonObj.reason !== undefined && reasonObj.reason !== null) {
+          reasonKind = 'aborted/' + DshSessionsRepository.cleanStr(reasonObj.reason.kind, '?');
+        }
+        if (reasonKind !== 'completed') {
+          let text: string = '生成失败：' + message;
+          if (text.length < 12) {
+            text = '生成失败（' + reasonKind + '）';
+          }
+          if (code !== '') {
+            text += ' [' + code + ']';
+          }
+          entries.push(DshSessionsRepository.entry(ChatEntryKind.Error, seq, time, 0,
+            text, '', 0, 0, '', null));
+        }
+        if (seq > maxTurnEndSeq) {
+          maxTurnEndSeq = seq;
+        }
       } else if (type.indexOf('chunk') >= 0) {
         if (seq > maxChunkSeq) {
           maxChunkSeq = seq;
         }
       }
       // 其余事件类型（assistant/chunk、chunkrow/*、agent/inbox/*、step/*、
-      // permission/*、sandbox/*、approval/*、request/*、web/*、session/* 杂项、turn/end）
+      // permission/*、sandbox/*、approval/*、request/*、web/*、session/* 杂项）
       // 只读模式不需要，直接忽略。
       } catch (err) {
         continue;
@@ -473,7 +605,7 @@ export class DshSessionsRepository {
       entries: entries,
       hasMore: parsed.hasMore === true,
       oldestSeq: entries.length > 0 ? entries[0].seq : 0,
-      generating: maxChunkSeq > maxContentSeq,
+      generating: maxChunkSeq > maxContentSeq && maxChunkSeq > maxTurnEndSeq,
     };
     return page;
   }

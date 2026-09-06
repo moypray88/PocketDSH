@@ -5,14 +5,23 @@ import mediaquery from '@ohos.mediaquery';
 import { BusinessError } from '@ohos.base';
 import { DshConfigStore } from '../service/DshConfigStore';
 import { DshApiClient } from '../service/DshApiClient';
+import { DshSessionsRepository } from '../service/DshSessionsRepository';
 import { ThemeColors, ThemeManager } from '../theme/Theme';
-import { KEY_CONFIG_READY, KEY_THEME_MODE, KEY_TOKEN_TICK, THEME_DARK, THEME_FOLLOW_SYSTEM, THEME_LIGHT } from '../model/DshTypes';
+import { KEY_CONFIG_READY, KEY_CUR_TAB, KEY_HIDDEN_TICK, KEY_THEME_MODE, KEY_TOKEN_TICK, THEME_DARK, THEME_FOLLOW_SYSTEM, THEME_LIGHT } from '../model/DshTypes';
+
+/** 隐藏会话行（标题尽力从服务器解析，未知回退短 ID）。 */
+interface HiddenRow {
+  id: string;
+  title: string;
+}
 
 @Component
 export struct SettingsView {
   @StorageProp('themeIsDark') dark: boolean = true;
   /** 打开完整版控制台（WebView）。 */
   onOpenConsole: () => void = () => {};
+  /** Index 当前 Tab：设置页组件常驻，切回时重读本机隐藏数。 */
+  @StorageProp(KEY_CUR_TAB) @Watch('onTabChange') curTab: number = 1;
 
   /** 0 跟随系统 / 1 深色 / 2 浅色。 */
   @State themeMode: number = THEME_FOLLOW_SYSTEM;
@@ -25,6 +34,10 @@ export struct SettingsView {
   @State savingToken: boolean = false;
   /** 本机隐藏的会话数量。 */
   @State hiddenCount: number = 0;
+  /** 展开的隐藏会话行（含标题）。 */
+  @State hiddenRows: HiddenRow[] = [];
+  @State hiddenExpanded: boolean = false;
+  @State hiddenLoading: boolean = false;
 
   private t(): ThemeColors {
     return ThemeManager.palette(this.dark);
@@ -50,6 +63,87 @@ export struct SettingsView {
       const e = err as BusinessError;
       promptAction.showToast({ message: '配置读取失败：' + e.message });
     }
+  }
+
+  /** 切回设置 Tab：重读本机隐藏数（本地读，无网络）；展开态则顺带重载行。 */
+  private onTabChange(): void {
+    this.syncHiddenCount();
+    if (this.hiddenExpanded) {
+      this.loadHiddenRows();
+    }
+  }
+
+  private async syncHiddenCount(): Promise<void> {
+    try {
+      const hidden: string[] = await DshConfigStore.getHiddenSessions(getContext(this));
+      this.hiddenCount = hidden.length;
+    } catch (err) {
+    }
+  }
+
+  /** 展开/收起隐藏会话列表；首次展开拉取行（含标题解析）。 */
+  private toggleHidden(): void {
+    this.hiddenExpanded = !this.hiddenExpanded;
+    if (this.hiddenExpanded && this.hiddenRows.length === 0 && this.hiddenCount > 0) {
+      this.loadHiddenRows();
+    }
+  }
+
+  /** 拉取隐藏会话行：ID 来自本机偏好，标题尽力从服务器会话列表解析。 */
+  private async loadHiddenRows(): Promise<void> {
+    this.hiddenLoading = true;
+    try {
+      const ctx = getContext(this);
+      const ids: string[] = await DshConfigStore.getHiddenSessions(ctx);
+      const titleById: Map<string, string> = new Map<string, string>();
+      try {
+        const sessions = await DshSessionsRepository.listSessions(ctx);
+        for (let i: number = 0; i < sessions.length; i++) {
+          titleById.set(sessions[i].sessionId, sessions[i].title);
+        }
+      } catch (err) {
+        // 标题解析失败（离线/认证过期）：行回退短 ID，恢复功能不受影响
+      }
+      const rows: HiddenRow[] = [];
+      for (let i = 0; i < ids.length; i++) {
+        const t: string | undefined = titleById.get(ids[i]);
+        const row: HiddenRow = {
+          id: ids[i],
+          title: t !== undefined ? t : ids[i].substring(0, 13) + '…',
+        };
+        rows.push(row);
+      }
+      this.hiddenRows = rows;
+      this.hiddenCount = rows.length;
+    } finally {
+      this.hiddenLoading = false;
+    }
+  }
+
+  /** 逐个恢复：移除一条隐藏记录并通知工作台。 */
+  private async restoreOne(row: HiddenRow): Promise<void> {
+    try {
+      await DshConfigStore.unhideSession(getContext(this), row.id);
+      const next: HiddenRow[] = [];
+      for (let i = 0; i < this.hiddenRows.length; i++) {
+        if (this.hiddenRows[i].id !== row.id) {
+          next.push(this.hiddenRows[i]);
+        }
+      }
+      this.hiddenRows = next;
+      this.hiddenCount = next.length;
+      this.notifyHiddenChanged();
+      promptAction.showToast({ message: '已恢复「' + row.title + '」' });
+    } catch (err) {
+      const e = err as BusinessError;
+      promptAction.showToast({ message: '恢复失败：' + e.message });
+    }
+  }
+
+  /** 通知常驻的工作台重载 hiddenIds（组件不重建，仅靠信号同步）。 */
+  private notifyHiddenChanged(): void {
+    const t = AppStorage.get<number>(KEY_HIDDEN_TICK) ?? 0;
+    AppStorage.setOrCreate(KEY_HIDDEN_TICK, t + 1);
   }
 
   private async applyThemeMode(mode: number): Promise<void> {
@@ -273,12 +367,74 @@ export struct SettingsView {
   @Builder
   hiddenCard() {
     Column({ space: 12 }) {
-      this.cardHeader('🗄', '隐藏的会话')
-      Text('长按会话可仅在本机隐藏（例如 PC 端已归档的会话）。此处可全部恢复。')
+      Row() {
+        Row({ space: 8 }) {
+          Text('🗄')
+            .fontSize(14)
+          Text('隐藏的会话')
+            .fontSize(15)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.t().textPrimary)
+        }
+        .layoutWeight(1)
+        .onClick(() => {
+          if (this.hiddenCount > 0) {
+            this.toggleHidden();
+          }
+        })
+
+        if (this.hiddenCount > 0) {
+          Text(this.hiddenExpanded ? '收起 ▴' : '展开 ▾')
+            .fontSize(12)
+            .fontColor(this.t().accent)
+            .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+            .borderRadius(10)
+            .backgroundColor(this.t().navActiveBg)
+            .onClick(() => {
+              this.toggleHidden();
+            })
+        }
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+
+      Text('长按会话可仅在本机隐藏（不影响服务器）。展开可逐个恢复。')
         .fontSize(12)
         .fontColor(this.t().textTertiary)
         .lineHeight(18)
         .width('100%')
+
+      if (this.hiddenExpanded && this.hiddenLoading) {
+        Row({ space: 8 }) {
+          LoadingProgress()
+            .width(16)
+            .height(16)
+            .color(this.t().accent)
+          Text('正在读取隐藏会话…')
+            .fontSize(12)
+            .fontColor(this.t().textTertiary)
+        }
+        .width('100%')
+      }
+
+      if (this.hiddenExpanded && this.hiddenCount === 0) {
+        Text('当前没有隐藏的会话')
+          .fontSize(12)
+          .fontColor(this.t().textTertiary)
+          .width('100%')
+      }
+
+      if (this.hiddenExpanded && this.hiddenRows.length > 0) {
+        Column() {
+          ForEach(this.hiddenRows, (r: HiddenRow) => {
+            this.hiddenRow(r)
+          }, (r: HiddenRow) => r.id)
+        }
+        .width('100%')
+        .borderRadius(12)
+        .backgroundColor(this.t().navActiveBg)
+      }
+
       Row() {
         Text('已隐藏 ' + this.hiddenCount + ' 个会话')
           .fontSize(13)
@@ -305,10 +461,37 @@ export struct SettingsView {
     .border({ width: 1, color: this.t().border })
   }
 
+  /** 单条隐藏会话行：标题 + 逐个恢复。 */
+  @Builder
+  hiddenRow(r: HiddenRow) {
+    Row() {
+      Text(r.title)
+        .fontSize(13)
+        .fontColor(this.t().textPrimary)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+      Text('恢复')
+        .fontSize(12)
+        .fontColor(this.t().accent)
+        .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+        .margin({ left: 8 })
+        .borderRadius(9)
+        .border({ width: 1, color: this.t().accent })
+        .onClick(() => {
+          this.restoreOne(r);
+        })
+    }
+    .width('100%')
+    .padding({ left: 12, right: 12, top: 9, bottom: 9 })
+  }
+
   private async restoreHidden(): Promise<void> {
     try {
       await DshConfigStore.clearHiddenSessions(getContext(this));
       this.hiddenCount = 0;
+      this.hiddenRows = [];
+      this.notifyHiddenChanged();
       promptAction.showToast({ message: '已恢复全部隐藏会话' });
     } catch (err) {
       const e = err as BusinessError;

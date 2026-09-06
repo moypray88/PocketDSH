@@ -49,3 +49,10 @@ export const KEY_ONB_BACK_TICK: string = 'onbBackTick'
 
 /** 跨页动作信号：请求工作台新建会话（首页"新建任务"/Tab"新建对话"）。 */
 export const KEY_CHAT_CREATE_TICK: string = 'chatCreateTick'
+
+/** Index 当前选中的 Tab（0=会话，与 Index.TabId 对齐）；工作台据此感知页面显隐。 */
+export const KEY_CUR_TAB: string = 'curTab'
+export const TAB_SESSIONS: number = 0
+
+/** 跨页信号：本机隐藏集被设置页改动（全部恢复），工作台需重载 hiddenIds。 */
+export const KEY_HIDDEN_TICK: string = 'hiddenTick'

@@ -45,7 +45,9 @@ export enum ChatEntryKind {
   /** 助手消息（含 reasoning 与用量）。 */
   Assistant,
   /** 工具调用（含结果回填）。 */
-  Tool
+  Tool,
+  /** 轮次失败（turn/end reason≠completed；text=格式化错误信息）。 */
+  Error
 }
 
 /** 单条聊天条目（session/page 记录归一化结果）。 */
@@ -103,4 +105,35 @@ export interface CatalogVm {
   /** 部署默认模型 ID。 */
   defaultModel: string;
   groups: ModelGroupVm[];
+}
+
+/** 工作区（dsh web「工作区」同构：一个工程目录 = 一组会话，顺序即服务器展示序）。 */
+export interface WorkspaceVm {
+  workspaceId: string;
+  /** 显示名（默认取目录 basename）。 */
+  title: string;
+  /** 工程目录绝对路径。 */
+  path: string;
+  /** 成员会话 ID（服务器维护的手动排序）。 */
+  sessionIds: string[];
+}
+
+/** workspace/follow 基线：工作区列表 + 全局归档集（web 端各处隐藏的会话）。 */
+export interface WorkspaceBaselineVm {
+  workspaces: WorkspaceVm[];
+  archivedSessionIds: string[];
+}
+
+/** 会话列表分区：一个工作区，或未归属任何工作区的「未分组」桶。 */
+export interface SessionSectionVm {
+  /** 折叠状态记忆键（workspaceId 或 'ungrouped'）。 */
+  key: string;
+  title: string;
+  /** 工程目录；未分组为空串。 */
+  path: string;
+  sessions: SessionSummaryVm[];
+  /** 是否未分组桶（配色与工作区区分）。 */
+  ungrouped: boolean;
+  /** 分区头图标：'folder' 工程 / 'hash' 未分组 / 'clock' 时间段 / '' 无图标。 */
+  icon: string;
 }

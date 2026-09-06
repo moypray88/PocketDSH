@@ -24,6 +24,14 @@ const COOKIE_RENEW_MARGIN_MS: number = 60 * 60 * 1000;
 const CONNECT_TIMEOUT_MS: number = 10000;
 const READ_TIMEOUT_MS: number = 30000;
 
+/** WebSocket 握手所需信息（服务器 origin + 鉴权头）。 */
+export interface DshWsConnectInfo {
+  /** 服务器 origin，如 'https://dsh.example.com'。 */
+  serverUrl: string;
+  /** WS 握手请求头（Authorization/Cookie/Origin）。 */
+  headers: Record<string, string>;
+}
+
 /** 响应信封（宽松解析：字段全部可缺省，逐层判空）。 */
 interface WireEnvelope {
   type?: string;
@@ -299,6 +307,31 @@ export class DshApiClient {
       return;
     }
     await DshApiClient.mintCookie(ctx, serverUrl, username, password, tokenUrl);
+  }
+
+  /**
+   * 供 DshStreamClient 获取 WS 握手信息：确保 Cookie 就绪后，
+   * 返回服务器 origin 与 Authorization/Cookie/Origin 头组合。
+   */
+  static async wsConnectInfo(ctx: common.Context): Promise<DshWsConnectInfo> {
+    const data = await DshConfigStore.load(ctx);
+    const password: string = await DshConfigStore.getPassword();
+    const tokenUrl: string = await DshConfigStore.getTokenUrl();
+    await DshApiClient.ensureCookie(ctx, data.serverUrl, data.username, password, tokenUrl);
+    const headers: Record<string, string> = {
+      'Authorization': DshApiClient.basicHeader(data.username, password),
+      // WS 握手头逐字上送：持久层恢复的 Cookie 可能带尾部换行等噪声，
+      // 混入头值会打碎 HTTP 报文（nginx 直接 400，WS 表现为非 101）
+      'Cookie': DshApiClient.cookieNameValue.replace(/[\r\n\t]/g, ' ').trim(),
+      // 注意：绝不能显式传 Origin——netstack 会自动追加自己生成的 Origin，
+      // 两个 Origin 被逗号合并成 "x, y"，dsh 的 Origin 校验直接拒绝（非 101）
+      // （实测：诊断服务器抓到 "origin": "http://127.0.0.1, https://dsh.goldclew.com"）
+    };
+    const info: DshWsConnectInfo = {
+      serverUrl: data.serverUrl,
+      headers: headers,
+    };
+    return info;
   }
 
   /**
