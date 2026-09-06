@@ -1,0 +1,242 @@
+# PocketDSH 架构设计文档
+
+> 本文档沉淀工程最重要的"记忆"：认证链路、dsh 协议契约、核心模块职责、关键设计决策（ADR）与踩坑记录。
+> 新会话/新成员从这里开始，不需要重新逆向任何东西。
+
+- 项目：鸿蒙（HarmonyOS）折叠屏 APP，远程指挥云主机上的 DeepSeek Harness（dsh）
+- 工程：`D:\workspace\PocketDSH`，SDK 6.1.1（API 24），bundle `com.pocket.dsh`
+- 服务器：`https://dsh.goldclew.com` = nginx（Basic Auth）→ 反代 dsh web（127.0.0.1:3080，systemd 单元 `dsh-web.service`）
+
+---
+
+## 1. 总体架构
+
+```
+┌─────────────────────── 华为 Pure X Max（阔折叠）───────────────────────┐
+│                                                                      │
+│  ┌─ UI 层 ─────────────────────────────────────────────┐             │
+│  │ Index.ets（唯一 @Entry，4 Tab + 返回深度协调）         │             │
+│  │  ├ HomeView        首页：状态卡/新建任务/近期会话/到期预警 │             │
+│  │  ├ WorkspaceChatView  会话列表 + 对话（主力页面）       │             │
+│  │  ├ SettingsView    主题/账号/令牌/隐藏恢复/完整版入口   │             │
+│  │  ├ OnboardingView  三步引导（地址→账号→令牌校验）       │             │
+│  │  └ WorkspaceView   WebView 内嵌 dsh 官方控制台（备用）  │             │
+│  ├─ 服务层 ─────────────────────────────────────────────┤             │
+│  │  DshApiClient        RPC 客户端（信封/认证/自愈）      │             │
+│  │  DshSessionsRepository  wire→视图模型（三层 null 防御） │             │
+│  │  DshConfigStore      偏好持久化 + 本机隐藏            │             │
+│  │  SecureStore         系统资产库加密（密码/令牌/Cookie） │             │
+│  │  HealthMonitor       延迟探针                        │             │
+│  ├─ 基础 ───────────────────────────────────────────────┤             │
+│  │  Theme.ets 双主题令牌 │ MdParser.ets 轻量 Markdown      │             │
+│  │  SessionVms.ets 视图模型契约 │ DshTypes.ets 全局键/常量 │             │
+│  └──────────────────────────────────────────────────────┘             │
+└──────────────────────────────┬───────────────────────────────┘
+                               │ HTTPS（手机直连；PC 开发需代理）
+┌──────────────────────────────▼───────────────────────────────┐
+│ nginx（Basic Auth: moypray）                                 │
+│  ├── /  → 反代 127.0.0.1:3080（dsh web）                     │
+│  └── /.pocketdsh/token → 令牌自动端点（已设计，暂未部署）        │
+├──────────────────────────────────────────────────────────────┤
+│ dsh web（systemd: dsh-web.service）                          │
+│  ├── session/list · page · prompt · create · rename ·        │
+│  │   cancel · selectModel · modelCatalog                     │
+│  └── 认证：?token=xxx 一次性换 30 天签名 Cookie                │
+│      （签名密钥持久化 → Cookie 跨重启有效）                     │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### 折叠屏双态
+
+- **断点**：根容器 `onAreaChange`，宽 ≥640vp = 展开态
+- 展开态：左侧 96vp 图标栏 + 内容区（对话页可再收起 320vp 会话左栏，`listPaneWidth` 动画）
+- 合盖态：底部 Tab（4 项，其中"新建"为动作项不保持选中）+ 单栏两级导航（列表↔对话）
+- 底栏/输入区垫高 `bottomAvoidPx`（系统手势条避让，EntryAbility 启动时读取）
+
+---
+
+## 2. 认证链路（最核心的工程记忆）
+
+### 2.1 两层门禁
+
+```
+APP 请求 ──① nginx Basic Auth（moypray/密码，每次请求自动携带）
+        ──② dsh 会话 Cookie（dsh-auth-*，HttpOnly，30 天）
+```
+
+- **用户名密码只开第一道门**。dsh 无账号密码体系，唯一发票入口是 `GET /?token=xxx`
+- `?token=` 是**一次性门票**：`dsh web` 每次启动随机生成（进程内存，重启即换）
+- 换到的 Cookie 是**长期通行证**：30 天有效；**签名密钥持久化在服务器凭据库**（`modifyRecord` 复用已有），因此 **Cookie 跨 dsh 重启依然有效**（已真机+浏览器实验双重验证）
+
+### 2.2 Cookie 获取的四个来源（依序兜底）
+
+| # | 来源 | 场景 |
+|---|---|---|
+| 1 | 内存静态缓存（未过期） | 常规运行 |
+| 2 | 令牌 URL 换票（GET 令牌 URL，跟随重定向，从 set-cookie/resp.cookies 提取） | 启动后首次 / 401 自愈 |
+| 3 | WebView Cookie 罐（`fetchCookieSync`） | 用过"完整版"的设备 |
+| 4 | **自动令牌端点** `GET /.pocketdsh/token`（Basic 保护；服务器定时从 journal 发布最新令牌）| 令牌也失效时；**端点已设计未部署** |
+
+- ⚠️ 鸿蒙 `@ohos.net.http` 设 `maxRedirects:0` 会**抛 2300047 异常**而非返回 303——必须跟随重定向再从最终响应提取
+- 换到 Cookie 后：**加密持久化**（SecureStore 资产库）+ 记录签发时间（preferences `cookieMintedAt`，到期提醒依据）
+
+### 2.3 自愈环
+
+```
+401 → clearCookie（内存+持久层）→ 重换 Cookie → 同请求重试一次
+     → 仍失败 → 令牌失效 → 来源 4 端点兜底 → 仍失败 → 明确报错引导设置页
+```
+
+### 2.4 到期提醒
+
+- Cookie 生命周期 30 天；首页每轮刷新计算剩余天数
+- 剩余 ≤5 天或已过期 → 琥珀色预警条 + "去更新"直达设置页
+- 未记录签发时间（-1）不显示；下次换票后自动开始生效
+
+---
+
+## 3. dsh API 协议契约（全部实测）
+
+### 3.1 传输与信封
+
+```
+POST {server}/api/{method}
+Headers: Content-Type: application/json
+         Authorization: Basic base64(user:pass)
+         Origin: {server}          ← Connection 插件校验
+         Cookie: dsh-auth-*=v1...
+
+请求体: {"type":"client-request","rpcId":"<32位hex>","method":"<method>",
+         "payload":{"args": <args>}}
+响应体: {"type":"server-response","rpcId":...,
+         "result":{"ok":true,"value":{...}} | {"ok":false,"error":{code,message,details}}}
+```
+
+- `args` 形态按端点而定：多数是 `{"request": {...}}`，`session/list` 用 `{"_request":{}}`，`session/modelCatalog` / `commands/execute` 是**裸对象无包装**
+- 方法名为**驼峰**（`session/modelCatalog`），带命名空间前缀
+
+### 3.2 端点速查
+
+| 方法 | args 包装 | 请求要点 | 备注 |
+|---|---|---|---|
+| `session/list` | `_request` | `{}` | items 含 projections.asOfSeq（=page 游标上限）/values.title/cwd/sessionStats/turnOutline/modelSelection.lastUsed |
+| `session/page` | `request` | `{address:{kind:'session',sessionId},throughSeq,maxMessages,beforeSeq?}` | throughSeq **必须 ≤ 当前游标**；超限报 `past cursor N`（正则提取 N 反查）；999999999 合法（边界校验在 1e10 以上） |
+| `session/prompt` | `request` | `{requestId(客户端生成，防重),sessionId,mode:'queue',content:[{type:'text',text}\|{type:'image',mediaType,data:base64,name?}],clientTimeZone}` | **唯一真实发送通道**；返回 `{accepted:true}` |
+| `session/create` | `request` | `{cwd?}` | 返回 sessionId；**延迟创建**：仅首条消息发出时调用 |
+| `session/selectModel` | `request` | `{sessionId,provider,model}` | 切换后生效于下一条消息 |
+| `session/modelCatalog` | （裸 args） | `{}` | groups[].models[] + default |
+| `session/cancel` | `request` | `{sessionId}` | 停止生成 |
+| `session/rename` | `request` | `{sessionId,title}` | 服务器级重命名 |
+| ~~`commands/execute`~~ | 裸 | `{agentId,line,images}` | ⚠️ **陷阱：TUI 壳命令通道，返回 ok 但消息不进对话** |
+
+未接入已发现：`session/search`、`session/fork`、`session/attachment`（图片可 base64 直嵌，暂不需要）、`follow`/`control`（stream 模式，WebSocket 逐字流的入口）。
+
+### 3.3 历史事件流（session/page records）
+
+**渲染映射**：
+
+| 事件 | 渲染 | 关键字段 |
+|---|---|---|
+| `user/message` | 用户气泡 | ⚠️ **只渲染 `source.kind==='user'`**；`plugin`/`skill-catalog` 是系统注入的伪用户消息（几千字上下文），渲染它们=问题与回复之间出现"空白墙"（血的教训） |
+| `assistant/message` | AI 卡片 | content[] 里 `reasoning` 与 `text` 块、usage、source.model；**text 与 reasoning 全空 = 工具步骤空壳帧，必须跳过** |
+| `tool/call` + `tool/result` | 工具行（点击展开） | 按 `callId` 配对回填 resultText |
+| `turn/start` | 轮次徽章 | data.turn |
+| `assistant/chunk`、`chunkrow/*` | **不渲染条目**，但用于 `generating` 判定 | chunk 事件 seq > 最后一条消息 seq ⇒ 正在生成 → "dsh 正在输入…"指示 |
+| 其余（step/*、agent/inbox/*、permission/*、request/*、web/*、session/*…） | 忽略 | |
+
+- 分页：每页 50；加载更早用 `beforeSeq = 本页最旧 seq`；合并按 seq 去重
+- `generating` 判定：`maxChunkSeq > maxContentSeq`
+
+### 3.4 认证相关事实
+
+- 令牌交换：GET 令牌 URL（带 Basic）→ 303 + `set-cookie: dsh-auth-*=v1...; Max-Age=2592000`（30 天）
+- Cookie 名 = `dsh-auth-` + base64url(sha256(authority))，绑定访问域名
+- 签名密钥持久 → **Cookie 跨 dsh 重启有效**（浏览器与 APP 同等韧性，已实验证明）
+
+---
+
+## 4. 核心模块职责
+
+| 文件 | 职责 | 关键设计 |
+|---|---|---|
+| `service/DshApiClient.ets` | RPC 客户端 | 信封构造（args 包装三形态）；Cookie 四源获取；**401 自愈**（同请求重试一次）；头组合变体重试（带/不带 Origin）；`DshApiClientError(code,message)`；自动令牌端点兜底；`clearCookie()` 同步清内存+异步清持久层；`cookieDaysLeft()` |
+| `service/DshSessionsRepository.ets` | wire→VM | **三层 null 防御**（信封层/解析层/单条跳过）；伪用户消息过滤；空壳 assistant 帧跳过；`generating` 判定；游标反查（past-cursor 正则）；sendText 支持图片 part |
+| `service/DshConfigStore.ets` | 持久化 | preferences `dsh_config`（server/username/theme/onboarded/hiddenSessions/cookieMintedAt）+ 资产库密钥代理；`normalizeServerUrl` |
+| `service/SecureStore.ets` | 加密存储 | `@ohos.security.asset`；别名：password / token URL / session cookie；读失败一律返回 ''（不抛） |
+| `service/HealthMonitor.ets` | 探针 | Basic Auth GET，任意响应=在线；200 ok / 401 auth-required |
+| `views/WorkspaceChatView.ets` | 主力页面 | 会话列表（搜索/长按菜单[重命名/本机隐藏]）+ 对话（导轨圆点时间线/三级折叠/Markdown/模型浮层/乐观回显/typing 指示/静默追踪）+ 草稿式新任务（延迟创建+工作目录选择）+ 返回深度 `chatBackDepth` |
+| `views/HomeView.ets` | 首页 | 缓存秒显（AppStorage homeXxxCache）+ 静默定时刷新（数据变化才写状态）+ 到期预警 + 快捷任务（预填工作台输入框） |
+| `views/OnboardingView.ets` | 引导 | 三步；令牌真实校验（GET 令牌 URL，401 时按响应体区分 dsh 令牌错误 vs nginx 密码错误）；自动获取令牌按钮；`onbStep` 同步支持侧滑回退 |
+| `views/SettingsView.ets` | 设置 | 主题三选（matchMedia 系统深浅）；令牌重贴（**同时清 WebView Cookie + 原生内存 Cookie**）；隐藏会话恢复；完整版入口；危险区 wipe |
+| `pages/Index.ets` | 外壳 | 4 Tab（首页/会话/新建动作/设置）；断点 640vp 双态；`onBackPress` 返回深度协调（浮层→对话/草稿→列表→引导步骤→才允许退出） |
+| `parse/MdParser.ets` | Markdown | 标题/有序无序列表/引用/分隔线/**表格**/代码围栏；行内 **粗体**、`行内码`、[链接]；未配对符号原样输出 |
+| `theme/Theme.ets` | 双主题 | 深空指挥舱 / 极简商务白 全量色板；`ThemeManager.apply(mode, systemDark)` 写 AppStorage `themeIsDark` |
+
+### AppStorage 全局键
+
+`themeIsDark` `themeMode` `configReady` `tokenRefreshTick`（设置重贴令牌→WebView 通道重登）`chatBackDepth`/`backPopTick`（返回协调）`onbStep`/`onbBackTick`（引导返回）`chatCreateTick`（跨页新建请求）`bottomAvoidPx`（手势条避让）`chatPrefill`（首页快捷任务预填）`homeHealthCache`/`homeSessionsCache`/`homeServerCache`（首页秒显缓存）
+
+---
+
+## 5. 关键设计决策（ADR）
+
+| # | 决策 | 理由 |
+|---|---|---|
+| ADR-1 | **WebView 降级为备用**：主体验走原生 RPC | 桌面版 dsh 网页在手机 WebView 里内容溢出、底部元素点不到；原生可控可美化。完整版保留于设置页 |
+| ADR-2 | **草稿式新建（延迟创建）** | 立即 create 会产生空壳会话堆积；草稿页首条消息发出才 create（可带 cwd），不输入返回=零副作用 |
+| ADR-3 | **归档=本机隐藏** | 实证：dsh 的归档是 web 端本地状态，`session/list` 全量返回。与官方同构：各端各管各的；长按隐藏 + 设置页恢复；防御性 `archived` 字段过滤保留 |
+| ADR-4 | **乐观回显 + seq 增量追踪** | 手机→香港链路秒级延迟；发送瞬间本地回显（发送中…标记），chase 按 **最大 seq 比较 + 尾部合并**（兼容已翻历史），20s 高频窗口 + 30s 常规静默轮询 |
+| ADR-5 | **三层 null 防御** | 服务器 JSON 大量显式 `null`（如 `modelSelection.lastUsed: null`）；undefined 判空不够。信封层/解析层/单条跳过——单条坏数据绝不放大为整页失败 |
+| ADR-6 | **返回深度协调**（无路由栈） | 单 @Entry + 组件树切换，系统侧滑默认退出 APP。子组件同步深度到 AppStorage，`onBackPress` 消费式逐层弹出 |
+| ADR-7 | **双通道认证一致性** | WebView（完整版）与原生 HTTP 各有 Cookie；重贴令牌/清除数据时两通道同步失效，避免状态分裂 |
+| ADR-8 | **流式 lite 而非 WebSocket** | chunk wire 格式埋藏深、WS 网关协议未逆向；用 `generating` 指示 + 高频轮询达到近似体验，真逐字流留待独立攻关 |
+| ADR-9 | **图标程序化生成** | 内置浏览器大视口截图不稳定；Node 内 zlib 手写 PNG 编码器 + 像素数学，确定性输出可复现 |
+| ADR-10 | **自动令牌端点：已设计、缓部署** | Cookie 持久化后其唯一价值=30 天一次的手动续期；安全边际（密码≈全权门票）不划算。到货提醒（ADR 见到期预警）替代 |
+
+---
+
+## 6. 踩坑记录（ArkTS / 鸿蒙 API）
+
+**编译层**：
+- Column 的 `alignItems` 参数是 `HorizontalAlign`（Row 才是 VerticalAlign）；Column 子元素**默认水平居中**（标题需显式 Start）
+- `@Builder` 调用**不能链属性**（`.margin` 报 void）——外包一层 Column 再挂
+- `throw` 只接受 Error 子类（`arkts-limited-throw`），联合可空类型先收窄
+- 对象字面量必须锚定已声明 interface；`Record`→interface 的 `as` 强转不被信任（用类型化空常量）
+- 嵌套函数改箭头闭包更稳；`catch` 必须带参数
+
+**运行/API 层**：
+- `@ohos.net.http` 的 `maxRedirects:0` **抛异常而非返回 3xx**——需要 303 响应体时不可用
+- POST 请求体放 `extraData`，漏了就是空 body → 网关报 "body is not JSON"
+- `HttpResponse.header` 是 Object：`(header as Record<string,Object>)['set-cookie']`，值可能是 string 或 Array
+- 服务器 JSON 大量**显式 null**；`undefined !== null` 判空必须双防
+- **Scroll 无界高度容器内禁止 `alignSelf(Stretch)` / `height('100%')`**——行高被解析到视口级 = 每行一屏高的"大空隙"（时间线连线因此改为纯圆点）
+- 百分比 maxWidth + 内容自适应宽 = 宽度循环依赖 → 展开大屏文字溢出（卡片用定宽 100%）
+- 系统 JSON-RPC 边界对字段**逐字校验**：多一层包装、字段名大小写、驼峰/短横线都会 400（`gateway/arguments-invalid` / `input-invalid`）
+
+**工具链**：
+- 构建：见 README；`DEVECO_SDK_HOME` 指向 DevEco 自带 sdk，java 用 DevEco 自带 jbr
+- PowerShell 脚本文件**别写中文注释**（无 BOM 时按 GBK 解析会吞行）
+- PC 直连香港服务器不稳，开发期走本地代理（`curl -x http://127.0.0.1:10808`）；手机直连
+- 内置浏览器大视口截图不稳定 → 图标等资源用程序化生成
+
+---
+
+## 7. UI 规格速查
+
+- 内容栏：860 居中（顶栏/消息/输入三段同宽）；消息区再嵌导轨（18vp）+ 12 间距
+- 内边距体系：AI 卡片 20/14；思考/工具条 18/12；终端块 14；气泡 20/14；轮次徽章 14/6
+- 行高：正文 23（15 号）、思考 18（12 号）、终端 18（12 号）
+- 输入框左缘 = 消息内容左缘（30vp 导轨占位）；发送键右缘 = 气泡右缘
+- 长文折叠阈值 300 字；思考过程默认折叠成"字数"提示条
+- 主题令牌见 `Theme.ets`（bgGrad/bgCard/border/text×3/accent/accent2/onAccent/success/warn/danger/term×2/navActiveBg/shadow）
+
+---
+
+## 8. 路线图（剩余）
+
+1. **WebSocket 逐字流**（大件）：逆向 `packages/api/gateway` 的 WS mux 协议 + `session/follow` stream，替换轮询
+2. 会话搜索（`session/search`）、fork（`session/fork`）
+3. 图片在历史消息中的内联渲染（现仅 🖼 标记）
+4. 自动令牌端点部署（脚本已备，按需启用）
+5. 时间线连线（需逐行测量高度的安全实现）
+6. Cookie 到期提醒已上线；自动端点部署后可移除
