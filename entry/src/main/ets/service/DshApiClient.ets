@@ -5,6 +5,7 @@ import common from '@ohos.app.ability.common';
 import web_webview from '@ohos.web.webview';
 import { BusinessError } from '@ohos.base';
 import { DshConfigStore } from './DshConfigStore';
+import { SECURE_ALIAS_COOKIE, SecureStore } from './SecureStore';
 
 /** dsh 网关业务失败（result.ok=false）或认证链路异常。 */
 export class DshApiClientError extends Error {
@@ -50,10 +51,20 @@ export class DshApiClient {
   private static cookieNameValue: string = '';
   private static cookieExpireAt: number = 0;
 
-  /** 主动清空 Cookie（设置页更换令牌后调用）。 */
+  /** 主动清空 Cookie（设置页更换令牌后调用）；持久层异步删除。 */
   static clearCookie(): void {
     DshApiClient.cookieNameValue = '';
     DshApiClient.cookieExpireAt = 0;
+    SecureStore.deleteSecret(SECURE_ALIAS_COOKIE);
+  }
+
+  /** 登录态剩余天数（签发 + 30 天）；未知签发时间返回 -1。 */
+  static cookieDaysLeft(mintedAt: number): number {
+    if (mintedAt <= 0) {
+      return -1;
+    }
+    const elapsed: number = Date.now() - mintedAt;
+    return COOKIE_LIFETIME_MS / DAY_MS - Math.floor(elapsed / DAY_MS);
   }
 
   /** 时间戳 + 随机数拼 32 位十六进制 rpcId（仅需唯一性，无需严格 UUID）。 */
@@ -77,7 +88,7 @@ export class DshApiClient {
    * 2300047 而非返回 303 响应），随后依次从响应 set-cookie 头、resp.cookies、
    * WebView Cookie 罐三个来源提取 dsh-auth-* Cookie。
    */
-  private static async mintCookie(serverUrl: string, username: string, password: string, tokenUrl: string): Promise<void> {
+  private static async mintCookie(ctx: common.Context, serverUrl: string, username: string, password: string, tokenUrl: string): Promise<void> {
     if (tokenUrl === '') {
       throw new DshApiClientError('auth/no-token', '尚未保存 dsh 令牌，请到设置页粘贴令牌 URL');
     }
@@ -170,6 +181,10 @@ export class DshApiClient {
     }
     DshApiClient.cookieNameValue = cookie;
     DshApiClient.cookieExpireAt = Date.now() + COOKIE_LIFETIME_MS - COOKIE_RENEW_MARGIN_MS;
+    // 持久化会话 Cookie：APP 重启后直接复用（签名密钥在服务器持久化，dsh 重启不影响其有效性）
+    await SecureStore.saveSecret(SECURE_ALIAS_COOKIE, cookie);
+    // 记录签发时间：登录态到期提醒依据
+    await DshConfigStore.setCookieMintedAt(ctx, Date.now());
   }
 
   /** 从一段或整份 set-cookie 文本中挑出 dsh-auth-* 的 "名字=值"。 */
@@ -270,12 +285,20 @@ export class DshApiClient {
     return DshApiClient.pickDshAuthCookie(setCookie);
   }
 
-  /** Cookie 存在且未到期；否则重换。 */
-  private static async ensureCookie(serverUrl: string, username: string, password: string, tokenUrl: string): Promise<void> {
+  /** Cookie 存在且未到期；否则先尝试持久层恢复，再走令牌换票。 */
+  private static async ensureCookie(ctx: common.Context, serverUrl: string, username: string, password: string, tokenUrl: string): Promise<void> {
     if (DshApiClient.cookieNameValue !== '' && Date.now() < DshApiClient.cookieExpireAt) {
       return;
     }
-    await DshApiClient.mintCookie(serverUrl, username, password, tokenUrl);
+    // APP 重启后内存 Cookie 丢失：优先恢复持久化的会话 Cookie（失效则由 401 自愈换新）
+    const stored: string = await SecureStore.readSecret(SECURE_ALIAS_COOKIE);
+    if (stored.indexOf('dsh-auth-') === 0 && stored.indexOf('=') > 0) {
+      DshApiClient.cookieNameValue = stored;
+      // 无法得知真实剩余有效期，给 7 天信任窗；过期由 401 自愈兜底
+      DshApiClient.cookieExpireAt = Date.now() + 7 * DAY_MS;
+      return;
+    }
+    await DshApiClient.mintCookie(ctx, serverUrl, username, password, tokenUrl);
   }
 
   /**
@@ -291,7 +314,7 @@ export class DshApiClient {
     const data = await DshConfigStore.load(ctx);
     const password: string = await DshConfigStore.getPassword();
     const tokenUrl: string = await DshConfigStore.getTokenUrl();
-    await DshApiClient.ensureCookie(data.serverUrl, data.username, password, tokenUrl);
+    await DshApiClient.ensureCookie(ctx, data.serverUrl, data.username, password, tokenUrl);
 
     const reqJson: string = requestObj === null ? '{}' : JSON.stringify(requestObj);
     // requestField 为空串表示 args 直接就是请求对象（如 commands/execute）
@@ -333,7 +356,7 @@ export class DshApiClient {
             if (!authRetried) {
               authRetried = true;
               DshApiClient.clearCookie();
-              await DshApiClient.mintCookie(data.serverUrl, data.username, password, tokenUrl);
+              await DshApiClient.mintCookie(ctx, data.serverUrl, data.username, password, tokenUrl);
               continue;
             }
             throw new DshApiClientError('auth/failed', 'dsh 认证失败，请到设置页更新令牌');

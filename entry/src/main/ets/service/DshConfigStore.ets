@@ -2,7 +2,7 @@
 import common from '@ohos.app.ability.common';
 import preferences from '@ohos.data.preferences';
 import { DEFAULT_SERVER, DEFAULT_USERNAME, THEME_FOLLOW_SYSTEM, DshConfigData } from '../model/DshTypes';
-import { SECURE_ALIAS_PASSWORD, SECURE_ALIAS_TOKEN, SecureStore } from './SecureStore';
+import { SECURE_ALIAS_PASSWORD, SECURE_ALIAS_TOKEN, SECURE_ALIAS_COOKIE, SecureStore } from './SecureStore';
 
 /** preferences 文件名。 */
 const PREFS_NAME: string = 'dsh_config';
@@ -93,13 +93,27 @@ export class DshConfigStore {
     return await SecureStore.readSecret(SECURE_ALIAS_TOKEN);
   }
 
-  /** 清空全部本地数据：preferences 整表清除 + 两个密钥删除。 */
+  /** 清空全部本地数据：preferences 整表清除 + 密钥与会话 Cookie 删除。 */
   static async wipe(ctx: common.Context): Promise<void> {
     const prefs: preferences.Preferences = await DshConfigStore.open(ctx);
     await prefs.clear();
     await prefs.flush();
     await SecureStore.deleteSecret(SECURE_ALIAS_PASSWORD);
     await SecureStore.deleteSecret(SECURE_ALIAS_TOKEN);
+    await SecureStore.deleteSecret(SECURE_ALIAS_COOKIE);
+  }
+
+  /** 记录会话 Cookie 的签发时间（登录态到期提醒依据）。 */
+  static async setCookieMintedAt(ctx: common.Context, ts: number): Promise<void> {
+    const prefs: preferences.Preferences = await DshConfigStore.open(ctx);
+    prefs.putSync('cookieMintedAt', ts);
+    await prefs.flush();
+  }
+
+  /** 读取 Cookie 签发时间；未记录为 0。 */
+  static async getCookieMintedAt(ctx: common.Context): Promise<number> {
+    const prefs: preferences.Preferences = await DshConfigStore.open(ctx);
+    return prefs.getSync('cookieMintedAt', 0) as number;
   }
 
   /** 本机隐藏的会话 ID 列表（如 PC 端已归档的会话）。 */

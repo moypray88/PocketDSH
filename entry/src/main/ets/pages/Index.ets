@@ -21,11 +21,33 @@ struct Index {
   @StorageProp(KEY_CONFIG_READY) configReady: boolean = false;
   /** 底部系统导航条避让高度（px），底栏据此垫底。 */
   @StorageProp('bottomAvoidPx') bottomAvoidPx: number = 0;
-  @State cur: TabId = TabId.Sessions;
+  @State cur: TabId = TabId.Home;
   @State expanded: boolean = true;
 
   private t(): ThemeColors {
     return ThemeManager.palette(this.dark);
+  }
+
+  /** 系统侧滑/返回键：有二级层级时逐层回退，没有才允许退出应用。 */
+  onBackPress(): boolean {
+    if (!this.configReady) {
+      const st = AppStorage.get<number>('onbStep') ?? 0;
+      if (st > 0) {
+        const t = AppStorage.get<number>('onbBackTick') ?? 0;
+        AppStorage.setOrCreate('onbBackTick', t + 1);
+        return true;
+      }
+      return false;
+    }
+    if (this.cur === TabId.Sessions) {
+      const d = AppStorage.get<number>('chatBackDepth') ?? 0;
+      if (d > 0) {
+        const t = AppStorage.get<number>('backPopTick') ?? 0;
+        AppStorage.setOrCreate('backPopTick', t + 1);
+        return true;
+      }
+    }
+    return false;
   }
 
   build() {
@@ -43,16 +65,16 @@ struct Index {
         OnboardingView({
           onCompleted: () => {
             AppStorage.setOrCreate(KEY_CONFIG_READY, true);
-            this.cur = TabId.Sessions;
+            this.cur = TabId.Home;
           },
         })
       } else if (this.expanded) {
         Row() {
           Column() {
             this.brandMark()
-            this.railItem(TabId.Home, '◈', '连接中心')
+            this.railItem(TabId.Home, '◈', '首页')
             this.railItem(TabId.Sessions, '◧', '会话')
-            this.railItem(TabId.Console, '▷', '完整版')
+            this.railAction('✎', '新建对话')
             this.railItem(TabId.Settings, '⚙', '设置')
             Blank()
             Column() {
@@ -137,6 +159,13 @@ struct Index {
     .margin({ bottom: 18 })
   }
 
+  /** 请求工作台新建会话（首页"新建任务"/侧栏"新建对话"共用入口）。 */
+  private requestNewChat(): void {
+    const t = AppStorage.get<number>('chatCreateTick') ?? 0;
+    AppStorage.setOrCreate('chatCreateTick', t + 1);
+    this.cur = TabId.Sessions;
+  }
+
   @Builder
   railItem(id: TabId, glyph: string, label: string) {
     Column() {
@@ -157,6 +186,46 @@ struct Index {
     })
   }
 
+  /** 动作型侧栏项（新建对话）：点击执行动作，不保持选中态。 */
+  @Builder
+  railAction(glyph: string, label: string) {
+    Column() {
+      Text(glyph)
+        .fontSize(22)
+        .fontColor(this.t().accent2)
+      Text(label)
+        .fontSize(11)
+        .margin({ top: 4 })
+        .fontColor(this.t().textSecondary)
+    }
+    .width('100%')
+    .padding({ top: 10, bottom: 10 })
+    .borderRadius(12)
+    .onClick(() => {
+      this.requestNewChat();
+    })
+  }
+
+  /** 动作型底栏项（新建）。 */
+  @Builder
+  barAction(glyph: string, label: string) {
+    Column() {
+      Text(glyph)
+        .fontSize(19)
+        .fontColor(this.t().accent2)
+      Text(label)
+        .fontSize(9)
+        .margin({ top: 1 })
+        .fontColor(this.t().textSecondary)
+    }
+    .layoutWeight(1)
+    .constraintSize({ minHeight: 30 })
+    .justifyContent(FlexAlign.Center)
+    .onClick(() => {
+      this.requestNewChat();
+    })
+  }
+
   @Builder
   content() {
     Stack() {
@@ -171,6 +240,9 @@ struct Index {
         coverMode: !this.expanded,
         onEnterConsole: () => {
           this.cur = TabId.Sessions;
+        },
+        onGoSettings: () => {
+          this.cur = TabId.Settings;
         },
       })
         .width('100%')
@@ -187,7 +259,11 @@ struct Index {
         .height('100%')
         .visibility(this.cur === TabId.Console ? Visibility.Visible : Visibility.None)
 
-      SettingsView()
+      SettingsView({
+        onOpenConsole: () => {
+          this.cur = TabId.Console;
+        },
+      })
         .width('100%')
         .height('100%')
         .visibility(this.cur === TabId.Settings ? Visibility.Visible : Visibility.None)
@@ -199,9 +275,9 @@ struct Index {
   @Builder
   bottomBar() {
     Row() {
-      this.barItem(TabId.Home, '◈', '连接')
+      this.barItem(TabId.Home, '◈', '首页')
       this.barItem(TabId.Sessions, '◧', '会话')
-      this.barItem(TabId.Console, '▷', '完整版')
+      this.barAction('✎', '新建')
       this.barItem(TabId.Settings, '⚙', '设置')
     }
     .width('100%')

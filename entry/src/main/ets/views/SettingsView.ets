@@ -11,6 +11,8 @@ import { KEY_CONFIG_READY, KEY_THEME_MODE, KEY_TOKEN_TICK, THEME_DARK, THEME_FOL
 @Component
 export struct SettingsView {
   @StorageProp('themeIsDark') dark: boolean = true;
+  /** 打开完整版控制台（WebView）。 */
+  onOpenConsole: () => void = () => {};
 
   /** 0 跟随系统 / 1 深色 / 2 浅色。 */
   @State themeMode: number = THEME_FOLLOW_SYSTEM;
@@ -133,6 +135,7 @@ export struct SettingsView {
           this.accountCard()
           this.hiddenCard()
           this.tokenCard()
+          this.consoleCard()
           this.dangerCard()
           this.aboutCard()
         }
@@ -372,6 +375,36 @@ export struct SettingsView {
           this.saveToken();
         })
       }
+    }
+    .width('100%')
+    .padding(18)
+    .borderRadius(18)
+    .backgroundColor(this.t().bgCard)
+    .border({ width: 1, color: this.t().border })
+  }
+
+  /** 完整版控制台入口（WebView，加载较慢，作为备用全功能通道）。 */
+  @Builder
+  consoleCard() {
+    Column({ space: 12 }) {
+      this.cardHeader('🖥', '完整版控制台')
+      Text('内嵌 dsh 官方网页控制台。功能最全，但需加载完整网页，打开较慢；日常任务建议用"会话"页。')
+        .fontSize(12)
+        .fontColor(this.t().textTertiary)
+        .lineHeight(18)
+        .width('100%')
+      Button('打开完整版控制台')
+        .width('100%')
+        .height(42)
+        .fontSize(14)
+        .fontWeight(FontWeight.Medium)
+        .fontColor(this.t().accent)
+        .backgroundColor(Color.Transparent)
+        .borderRadius(12)
+        .border({ width: 1, color: this.t().border })
+        .onClick(() => {
+          this.onOpenConsole();
+        })
     }
     .width('100%')
     .padding(18)

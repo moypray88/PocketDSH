@@ -6,7 +6,7 @@ import { BusinessError } from '@ohos.base';
 import { DshConfigStore } from '../service/DshConfigStore';
 import { DshApiClient } from '../service/DshApiClient';
 import { ThemeColors, ThemeManager } from '../theme/Theme';
-import { DEFAULT_SERVER, DEFAULT_USERNAME } from '../model/DshTypes';
+import { DEFAULT_SERVER, DEFAULT_USERNAME, KEY_ONB_BACK_TICK, KEY_ONB_STEP } from '../model/DshTypes';
 
 @Component
 export struct OnboardingView {
@@ -14,9 +14,19 @@ export struct OnboardingView {
   onCompleted: () => void = () => {};
 
   @StorageProp('themeIsDark') dark: boolean = true;
+  /** 系统侧滑/返回键：Index 在引导步骤 >0 时下发返回信号。 */
+  @StorageProp('onbBackTick') @Watch('onOnbBack') onbBackTick: number = 0;
 
   /** 当前步骤：0 服务器地址 / 1 账号 / 2 令牌。 */
   @State step: number = 0;
+
+  private onOnbBack(): void {
+    this.prev();
+  }
+
+  private syncStep(): void {
+    AppStorage.setOrCreate(KEY_ONB_STEP, this.step);
+  }
   @State serverUrl: string = DEFAULT_SERVER;
   @State username: string = DEFAULT_USERNAME;
   @State password: string = '';
@@ -32,6 +42,7 @@ export struct OnboardingView {
     this.errorMsg = '';
     if (this.step > 0) {
       this.step = this.step - 1;
+      this.syncStep();
     }
   }
 
@@ -43,6 +54,7 @@ export struct OnboardingView {
         return;
       }
       this.step = 1;
+      this.syncStep();
       return;
     }
     if (this.step === 1) {
@@ -51,6 +63,7 @@ export struct OnboardingView {
         return;
       }
       this.step = 2;
+      this.syncStep();
       return;
     }
     this.verifyToken();

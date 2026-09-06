@@ -1,6 +1,9 @@
 /** 原生工作台：会话列表 + 对话历史（只读）。展开态双栏，合盖态两级导航。 */
 import promptAction from '@ohos.promptAction';
 import common from '@ohos.app.ability.common';
+import fs from '@ohos.file.fs';
+import util from '@ohos.util';
+import { photoAccessHelper } from '@kit.MediaLibraryKit';
 import { BusinessError } from '@ohos.base';
 import { DshSessionsRepository } from '../service/DshSessionsRepository';
 import { DshConfigStore } from '../service/DshConfigStore';
@@ -31,6 +34,10 @@ export struct WorkspaceChatView {
   @StorageProp('themeIsDark') dark: boolean = true;
   /** 底部系统导航条避让高度（px），输入区据此垫底。 */
   @StorageProp('bottomAvoidPx') bottomAvoidPx: number = 0;
+  /** 系统侧滑/返回键弹出信号（Index.onBackPress 下发）。 */
+  @StorageProp('backPopTick') @Watch('onBackPop') backPopTick: number = 0;
+  /** 新建会话请求信号（首页"新建任务"/Tab"新建对话"下发）。 */
+  @StorageProp('chatCreateTick') @Watch('onCreateTick') chatCreateTick: number = 0;
 
   @State listState: ListState = ListState.Loading;
   @State sessions: SessionSummaryVm[] = [];
@@ -69,6 +76,20 @@ export struct WorkspaceChatView {
   /** 乐观回显：发送瞬间本地先显示，服务器确认后移除。 */
   @State echoText: string = '';
   @State echoSending: boolean = false;
+  /** 助手生成中（显示"正在输入"指示）。 */
+  @State typing: boolean = false;
+  /** 待发送图片附件（base64，不含 data: 前缀）。 */
+  @State attachBase64: string = '';
+  @State attachName: string = '';
+  @State attachMediaType: string = '';
+  /** 草稿模式：新任务页，首条消息发出时才真正创建会话。 */
+  @State drafting: boolean = false;
+  @State draftText: string = '';
+  @State draftCwd: string = '';
+  /** 工作目录选择浮层。 */
+  @State wsPickerOpen: boolean = false;
+  @State wsCustomOpen: boolean = false;
+  @State wsCustomText: string = '';
 
   private scroller: Scroller = new Scroller();
   private inFlight: boolean = false;
@@ -84,7 +105,109 @@ export struct WorkspaceChatView {
     return ThemeManager.palette(this.dark);
   }
 
+  /** 同步返回深度到 AppStorage（0 列表 / 1 对话 / 2 浮层），供 Index.onBackPress 判定。 */
+  private setBackDepth(d: number): void {
+    AppStorage.setOrCreate('chatBackDepth', d);
+  }
+
+  /** 系统返回：优先关浮层，再退草稿/会话列表。 */
+  private onBackPop(): void {
+    if (this.wsPickerOpen) {
+      this.wsPickerOpen = false;
+      this.wsCustomOpen = false;
+      this.setBackDepth(this.drafting ? 1 : 0);
+      return;
+    }
+    if (this.modelPickerOpen || this.renameOpen) {
+      this.modelPickerOpen = false;
+      this.renameOpen = false;
+      this.setBackDepth(this.inChat ? 1 : 0);
+      return;
+    }
+    if (this.drafting || this.inChat) {
+    this.drafting = false;
+    this.draftText = '';
+    this.inChat = false;
+    this.attachBase64 = '';
+    this.attachName = '';
+    this.attachMediaType = '';
+    this.setBackDepth(0);
+  }
+  }
+
+  /** 响应跨页"新建会话"请求：进入草稿模式（不发请求，首条消息才建会话）。 */
+  private onCreateTick(): void {
+    this.enterDraft();
+  }
+
+  /** 进入新任务草稿页。 */
+  private enterDraft(): void {
+    this.selectedId = '';
+    this.entries = [];
+    this.chatState = ChatState.Idle;
+    this.drafting = true;
+    this.draftText = '';
+    this.draftCwd = '';
+    this.expandedSeqs = [];
+    if (this.pollTimer >= 0) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = -1;
+    }
+    this.inChat = true;
+    this.setBackDepth(1);
+  }
+
+  /** 草稿可发送条件。 */
+  private canSendDraft(): boolean {
+    return this.draftText.trim() !== '' && !this.creating;
+  }
+
+  /** 当前工作目录展示文案。 */
+  private draftCwdLabel(): string {
+    return this.draftCwd === '' ? '默认 · 服务器主目录' : this.draftCwd;
+  }
+
+  /** 最近使用过的工作目录（去重取 6 个）。 */
+  private recentCwds(): string[] {
+    const out: string[] = [];
+    for (let i: number = 0; i < this.sessions.length && out.length < 6; i++) {
+      const cwd: string = this.sessions[i].cwd;
+      if (cwd !== '' && out.indexOf(cwd) < 0) {
+        out.push(cwd);
+      }
+    }
+    return out;
+  }
+
+  /** 发送草稿：此刻才创建会话 → 打开 → 发送首条消息。 */
+  private async sendDraft(): Promise<void> {
+    const text: string = this.draftText.trim();
+    if (text === '' || this.creating) {
+      return;
+    }
+    this.creating = true;
+    try {
+      const ctx: common.Context = getContext(this);
+      const s: SessionSummaryVm = await DshSessionsRepository.createSession(ctx, this.draftCwd);
+      this.drafting = false;
+      this.draftText = '';
+      await this.refreshList(true);
+      await this.openSession(s);
+      this.echoText = text;
+      this.echoSending = false;
+      await DshSessionsRepository.sendText(ctx, s.sessionId, text, '', '', '');
+      promptAction.showToast({ message: '已发送，正在等待 dsh 处理' });
+      this.pollAfterSend();
+    } catch (err) {
+      const e: BusinessError = err as BusinessError;
+      promptAction.showToast({ message: '创建失败：' + e.message });
+    } finally {
+      this.creating = false;
+    }
+  }
+
   aboutToAppear(): void {
+    this.setBackDepth(0);
     this.refreshList(true);
     this.loadHidden();
     this.autoTimer = setInterval(() => {
@@ -139,6 +262,9 @@ export struct WorkspaceChatView {
     this.selectedId = s.sessionId;
     this.throughSeq = s.asOfSeq;
     this.inChat = true;
+    this.drafting = false;
+    this.setBackDepth(1);
+    this.setBackDepth(1);
     this.expandedSeqs = [];
     this.loadedOlder = false;
     this.modelOverride = '';
@@ -165,6 +291,7 @@ export struct WorkspaceChatView {
       this.entries = page.entries;
       this.hasMore = page.hasMore;
       this.oldestSeq = page.oldestSeq;
+      this.typing = page.generating;
       this.chatState = ChatState.Ready;
       this.echoText = '';
       this.chaseFailCount = 0;
@@ -202,7 +329,9 @@ export struct WorkspaceChatView {
       // throughSeq 传 -1：由仓库层自动反查最新游标，确保能拿到新消息
       const page: HistoryPageVm = await DshSessionsRepository.loadHistory(ctx, this.selectedId, -1, -1);
       const pageMax: number = page.entries.length > 0 ? page.entries[page.entries.length - 1].seq : -1;
-      if (pageMax > this.maxSeq()) {
+      const grew: boolean = pageMax > this.maxSeq();
+      const genChanged: boolean = page.generating !== this.typing;
+      if (grew) {
         if (!this.loadedOlder) {
           // 未翻过页：整页替换（含滚动贴底）
           this.entries = page.entries;
@@ -223,6 +352,9 @@ export struct WorkspaceChatView {
         this.echoText = '';
         this.scrollToBottom();
         this.refreshList(false);
+      }
+      if (genChanged) {
+        this.typing = page.generating;
       }
       this.chaseFailCount = 0;
     } catch (err) {
@@ -300,7 +432,43 @@ export struct WorkspaceChatView {
   }
 
   private canSend(): boolean {
-    return this.inputText.trim() !== '' && !this.sending && this.selectedId !== '';
+    return (this.inputText.trim() !== '' || this.attachBase64 !== '') && !this.sending && this.selectedId !== '';
+  }
+
+  /** 从相册选择一张图片作为附件（base64 内嵌）。 */
+  private async pickImage(): Promise<void> {
+    try {
+      const picker = new photoAccessHelper.PhotoViewPicker();
+      const result = await picker.select({
+        MIMEType: photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE,
+        maxSelectNumber: 1,
+      });
+      if (result.photoUris.length === 0) {
+        return;
+      }
+      const uri: string = result.photoUris[0];
+      const file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
+      const stat = fs.statSync(file.fd);
+      if (stat.size > 4 * 1024 * 1024) {
+        fs.closeSync(file.fd);
+        promptAction.showToast({ message: '图片请小于 4MB' });
+        return;
+      }
+      const buf: ArrayBuffer = new ArrayBuffer(stat.size);
+      fs.readSync(file.fd, buf);
+      fs.closeSync(file.fd);
+      this.attachBase64 = new util.Base64Helper().encodeToStringSync(new Uint8Array(buf));
+      const lower: string = uri.toLowerCase();
+      if (lower.endsWith('.png')) {
+        this.attachMediaType = 'image/png';
+        this.attachName = 'image.png';
+      } else {
+        this.attachMediaType = 'image/jpeg';
+        this.attachName = 'image.jpg';
+      }
+    } catch (err) {
+      promptAction.showToast({ message: '选择图片失败' });
+    }
   }
 
   /** 长文折叠阈值（字符数）。 */
@@ -332,16 +500,23 @@ export struct WorkspaceChatView {
   /** 发送当前输入：本地立即回显，服务器确认后由轮询替换为真实消息。 */
   private async sendCurrent(): Promise<void> {
     const text: string = this.inputText.trim();
-    if (text === '' || this.sending || this.selectedId === '') {
+    if (text === '' && this.attachBase64 === '') {
+      return;
+    }
+    if (this.sending || this.selectedId === '') {
       return;
     }
     this.sending = true;
-    this.echoText = text;
+    this.echoText = (this.attachBase64 !== '' ? '🖼 ' : '') + text;
     this.echoSending = true;
     try {
       const ctx: common.Context = getContext(this);
-      await DshSessionsRepository.sendText(ctx, this.selectedId, text);
+      await DshSessionsRepository.sendText(ctx, this.selectedId, text,
+        this.attachBase64, this.attachMediaType, this.attachName);
       this.inputText = '';
+      this.attachBase64 = '';
+      this.attachName = '';
+      this.attachMediaType = '';
       this.echoSending = false;
       promptAction.showToast({ message: '已发送，正在等待 dsh 处理' });
       this.refreshList(false);
@@ -351,29 +526,14 @@ export struct WorkspaceChatView {
       const e: BusinessError = err as BusinessError;
       this.echoText = '';
       this.echoSending = false;
-      promptAction.showToast({ message: '发送失败：' + e.message });
+      const msg: string = e.message;
+      if (msg.indexOf('not support') >= 0) {
+        promptAction.showToast({ message: '当前模型不支持图片输入，请点右上角模型胶囊切换视觉模型' });
+      } else {
+        promptAction.showToast({ message: '发送失败：' + msg });
+      }
     } finally {
       this.sending = false;
-    }
-  }
-
-  /** 新建会话：创建后刷新列表并直接进入。 */
-  private async createNewSession(): Promise<void> {
-    if (this.creating) {
-      return;
-    }
-    this.creating = true;
-    try {
-      const ctx: common.Context = getContext(this);
-      const s: SessionSummaryVm = await DshSessionsRepository.createSession(ctx);
-      promptAction.showToast({ message: '新会话已创建' });
-      await this.refreshList(true);
-      await this.openSession(s);
-    } catch (err) {
-      const e: BusinessError = err as BusinessError;
-      promptAction.showToast({ message: '创建失败：' + e.message });
-    } finally {
-      this.creating = false;
     }
   }
 
@@ -388,6 +548,9 @@ export struct WorkspaceChatView {
           Span(r.text)
             .fontSize(size - 2)
             .fontFamily('monospace')
+            .fontColor(this.t().accent)
+        } else if (r.link !== '') {
+          Span(r.text)
             .fontColor(this.t().accent)
         } else if (r.bold) {
           Span(r.text)
@@ -485,6 +648,42 @@ export struct WorkspaceChatView {
         .height(1)
         .backgroundColor(this.t().border)
         .margin({ top: 12, bottom: 4 })
+    } else if (b.kind === MdKind.Table && b.table !== null) {
+      Column() {
+        if (b.table.header.length > 0) {
+          Row() {
+            ForEach(b.table.header, (cell: MdRun[], ci: number) => {
+              Column() {
+                this.runsText(cell, 13, this.t().textPrimary)
+              }
+              .layoutWeight(1)
+              .padding(8)
+              .border({ width: { bottom: 1 }, color: this.t().accent })
+            }, (cell: MdRun[], ci: number) => 'h' + ci)
+          }
+          .width('100%')
+          .alignItems(VerticalAlign.Top)
+        }
+        ForEach(b.table.rows, (row: MdRun[], ri: number) => {
+          Row() {
+            ForEach(row, (cell: MdRun[], ci: number) => {
+              Column() {
+                this.runsText(cell, 13, this.t().textSecondary)
+              }
+              .layoutWeight(1)
+              .padding(8)
+              .border({ width: { bottom: 0.5 }, color: this.t().border })
+            }, (cell: MdRun[], ci: number) => ri + '-' + ci)
+          }
+          .width('100%')
+          .alignItems(VerticalAlign.Top)
+        }, (row: MdRun[], ri: number) => 'r' + ri)
+      }
+      .width('100%')
+      .padding(6)
+      .borderRadius(12)
+      .backgroundColor(this.t().navActiveBg)
+      .margin({ top: 8 })
     } else {
       Column() {
         this.runsText(b.runs, 15, this.t().textPrimary)
@@ -513,6 +712,7 @@ export struct WorkspaceChatView {
 
   private async openModelPicker(): Promise<void> {
     this.modelPickerOpen = true;
+    this.setBackDepth(2);
     if (this.catalogGroups.length > 0 || this.catalogLoading) {
       return;
     }
@@ -525,6 +725,7 @@ export struct WorkspaceChatView {
     } catch (err) {
       promptAction.showToast({ message: '模型目录拉取失败' });
       this.modelPickerOpen = false;
+      this.setBackDepth(1);
     } finally {
       this.catalogLoading = false;
     }
@@ -539,6 +740,7 @@ export struct WorkspaceChatView {
       await DshSessionsRepository.selectModel(ctx, this.selectedId, g.id, m.id);
       this.modelOverride = m.id;
       this.modelPickerOpen = false;
+      this.setBackDepth(1);
       promptAction.showToast({ message: '已切换到 ' + m.name });
     } catch (err) {
       const e: BusinessError = err as BusinessError;
@@ -580,6 +782,7 @@ export struct WorkspaceChatView {
           this.renameTargetId = s.sessionId;
           this.renameText = s.title === '(未命名会话)' ? '' : s.title;
           this.renameOpen = true;
+          this.setBackDepth(2);
         },
       },
       secondaryButton: {
@@ -599,6 +802,7 @@ export struct WorkspaceChatView {
       if (this.selectedId === s.sessionId) {
         this.selectedId = '';
         this.inChat = false;
+        this.setBackDepth(0);
         this.chatState = ChatState.Idle;
         this.entries = [];
       }
@@ -638,6 +842,7 @@ export struct WorkspaceChatView {
       }
       this.sessions = next;
       this.renameOpen = false;
+      this.setBackDepth(1);
       promptAction.showToast({ message: '已重命名' });
     } catch (err) {
       const e: BusinessError = err as BusinessError;
@@ -679,6 +884,7 @@ export struct WorkspaceChatView {
       .backgroundColor('rgba(0,0,0,0.55)')
       .onClick(() => {
         this.renameOpen = false;
+      this.setBackDepth(1);
       })
 
     Column({ space: 14 }) {
@@ -714,6 +920,7 @@ export struct WorkspaceChatView {
           .borderRadius(12)
           .onClick(() => {
             this.renameOpen = false;
+      this.setBackDepth(1);
           })
         Button('确认')
           .layoutWeight(1)
@@ -785,6 +992,9 @@ export struct WorkspaceChatView {
   build() {
     Stack() {
       this.mainLayout()
+      if (this.wsPickerOpen) {
+        this.wsPickerOverlay()
+      }
       if (this.modelPickerOpen) {
         this.modelPickerOverlay()
       }
@@ -826,6 +1036,246 @@ export struct WorkspaceChatView {
     }
   }
 
+  /** 新任务草稿页：美观居中构图，首条消息发出时才创建会话。 */
+  @Builder
+  draftComposer() {
+    Column() {
+      if (this.coverMode) {
+        Row() {
+          Column() {
+            Text('‹')
+              .fontSize(24)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.t().accent)
+          }
+          .width(48)
+          .height(48)
+          .justifyContent(FlexAlign.Center)
+          .onClick(() => {
+            this.drafting = false;
+            this.draftText = '';
+            this.inChat = false;
+            this.setBackDepth(0);
+          })
+        }
+        .width('100%')
+      }
+
+      Scroll() {
+        Column({ space: 18 }) {
+          Column({ space: 4 }) {
+            Text('✦')
+              .fontSize(26)
+              .fontColor(this.t().onAccent)
+              .width(56)
+              .height(56)
+              .textAlign(TextAlign.Center)
+              .borderRadius(18)
+              .linearGradient({
+                angle: 135,
+                colors: [[this.t().accent, 0.0], [this.t().accent2, 1.0]],
+              })
+            Text('新任务')
+              .fontSize(26)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.t().textPrimary)
+              .margin({ top: 14 })
+            Text('描述要做的事，发送时自动创建会话')
+              .fontSize(13)
+              .fontColor(this.t().textSecondary)
+              .margin({ top: 6 })
+          }
+          .width('100%')
+          .alignItems(HorizontalAlign.Start)
+          .margin({ top: 10 })
+
+          Column() {
+            TextArea({ text: this.draftText, placeholder: '例如：帮我抓取今天的 AI 领域舆情，整理成摘要…' })
+              .width('100%')
+              .height(140)
+              .fontSize(15)
+              .fontColor(this.t().textPrimary)
+              .placeholderColor(this.t().textTertiary)
+              .backgroundColor(Color.Transparent)
+              .padding(0)
+              .onChange((v: string) => {
+                this.draftText = v;
+              })
+          }
+          .width('100%')
+          .padding(16)
+          .borderRadius(16)
+          .backgroundColor(this.t().navActiveBg)
+          .border({ width: 1, color: this.t().border })
+
+          Row({ space: 10 }) {
+            Text('📁')
+              .fontSize(17)
+            Column({ space: 2 }) {
+              Text('工作目录')
+                .fontSize(11)
+                .fontColor(this.t().textTertiary)
+              Text(this.draftCwdLabel())
+                .fontSize(13)
+                .fontColor(this.t().textPrimary)
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+            Text('更换 ▾')
+              .fontSize(12)
+              .fontColor(this.t().accent)
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 12, bottom: 12 })
+          .borderRadius(14)
+          .backgroundColor(this.t().bgCard)
+          .border({ width: 1, color: this.t().border })
+          .onClick(() => {
+            this.wsPickerOpen = true;
+            this.setBackDepth(2);
+          })
+
+          Column() {
+            Text(this.creating ? '创建中…' : '发送任务 ➤')
+              .fontSize(16)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.canSendDraft() ? this.t().onAccent : this.t().textTertiary)
+          }
+          .width('100%')
+          .height(52)
+          .justifyContent(FlexAlign.Center)
+          .borderRadius(16)
+          .linearGradient({
+            angle: 135,
+            colors: this.canSendDraft()
+              ? [[this.t().accent, 0.0], [this.t().accent2, 1.0]]
+              : [[this.t().navActiveBg, 0.0], [this.t().navActiveBg, 1.0]],
+          })
+          .opacity(this.canSendDraft() ? 1.0 : 0.6)
+          .onClick(() => {
+            this.sendDraft();
+          })
+
+          Text('提示：不输入直接返回，不会创建任何会话')
+            .fontSize(11)
+            .fontColor(this.t().textTertiary)
+            .width('100%')
+            .textAlign(TextAlign.Center)
+        }
+        .width('100%')
+        .constraintSize({ maxWidth: 640 })
+        .padding({ left: 20, right: 20, top: 26, bottom: 30 })
+      }
+      .width('100%')
+      .layoutWeight(1)
+      .scrollBar(BarState.Off)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  /** 工作目录选择浮层：默认 / 最近使用 / 自定义路径。 */
+  @Builder
+  wsPickerOverlay() {
+    Column()
+      .width('100%')
+      .height('100%')
+      .backgroundColor('rgba(0,0,0,0.55)')
+      .onClick(() => {
+        this.wsPickerOpen = false;
+        this.wsCustomOpen = false;
+        this.setBackDepth(1);
+      })
+
+    Column({ space: 10 }) {
+      Text('选择工作目录')
+        .fontSize(16)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(this.t().textPrimary)
+        .width('100%')
+        .margin({ bottom: 4 })
+
+      this.wsRow('默认 · 服务器主目录', this.draftCwd === '', () => {
+        this.draftCwd = '';
+        this.wsPickerOpen = false;
+        this.setBackDepth(1);
+      })
+      ForEach(this.recentCwds(), (cwd: string) => {
+        this.wsRow(cwd, this.draftCwd === cwd, () => {
+          this.draftCwd = cwd;
+          this.wsPickerOpen = false;
+          this.setBackDepth(1);
+        })
+      }, (cwd: string) => cwd)
+
+      if (!this.wsCustomOpen) {
+        this.wsRow('输入其他路径…', false, () => {
+          this.wsCustomOpen = true;
+        })
+      } else {
+        Row({ space: 10 }) {
+          TextInput({ text: this.wsCustomText, placeholder: '/absolute/path' })
+            .layoutWeight(1)
+            .height(42)
+            .fontSize(13)
+            .fontColor(this.t().textPrimary)
+            .placeholderColor(this.t().textTertiary)
+            .backgroundColor(this.t().navActiveBg)
+            .borderRadius(10)
+            .onChange((v: string) => {
+              this.wsCustomText = v;
+            })
+          Button('确定')
+            .height(42)
+            .fontSize(13)
+            .fontColor(this.t().onAccent)
+            .backgroundColor(this.t().accent)
+            .borderRadius(10)
+            .onClick(() => {
+              const p: string = this.wsCustomText.trim();
+              if (p !== '') {
+                this.draftCwd = p;
+                this.wsPickerOpen = false;
+                this.wsCustomOpen = false;
+                this.setBackDepth(1);
+              }
+            })
+        }
+        .width('100%')
+      }
+    }
+    .width('86%')
+    .constraintSize({ maxWidth: 520 })
+    .padding(18)
+    .borderRadius(20)
+    .backgroundColor(this.t().bgCard)
+    .border({ width: 1, color: this.t().border })
+  }
+
+  @Builder
+  wsRow(label: string, selected: boolean, action: () => void) {
+    Row({ space: 8 }) {
+      Text(selected ? '● ' : '○ ')
+        .fontSize(13)
+        .fontColor(selected ? this.t().accent : this.t().textTertiary)
+      Text(label)
+        .fontSize(13.5)
+        .fontColor(this.t().textPrimary)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+    }
+    .width('100%')
+    .padding({ top: 12, bottom: 12, left: 12, right: 12 })
+    .borderRadius(12)
+    .backgroundColor(selected ? this.t().navActiveBg : Color.Transparent)
+    .onClick(() => {
+      action();
+    })
+  }
+
   /** 模型选择浮层：遮罩 + 目录卡片。 */
   @Builder
   modelPickerOverlay() {
@@ -835,6 +1285,7 @@ export struct WorkspaceChatView {
       .backgroundColor('rgba(0,0,0,0.55)')
       .onClick(() => {
         this.modelPickerOpen = false;
+      this.setBackDepth(1);
       })
 
     Column() {
@@ -854,6 +1305,7 @@ export struct WorkspaceChatView {
         .justifyContent(FlexAlign.Center)
         .onClick(() => {
           this.modelPickerOpen = false;
+      this.setBackDepth(1);
         })
       }
       .width('100%')
@@ -1067,7 +1519,7 @@ export struct WorkspaceChatView {
       .border({ width: 1, color: this.t().border })
       .margin({ left: 16, right: 16, top: 10, bottom: 14 })
       .onClick(() => {
-        this.createNewSession();
+        this.enterDraft();
       })
     }
     .width(this.coverMode ? '100%' : this.listPaneWidth)
@@ -1156,7 +1608,10 @@ export struct WorkspaceChatView {
   chatPane() {
     Column() {
       Column() {
-        this.chatHeader()
+        if (this.drafting) {
+          this.draftComposer()
+        } else {
+          this.chatHeader()
       if (this.chatState === ChatState.Loading) {
         Column() {
           LoadingProgress()
@@ -1251,6 +1706,23 @@ export struct WorkspaceChatView {
                 .width('100%')
                 .alignItems(VerticalAlign.Top)
               }, (e: ChatEntryVm) => '' + e.seq)
+              if (this.typing) {
+                Row({ space: 8 }) {
+                  LoadingProgress()
+                    .width(14)
+                    .height(14)
+                    .color(this.t().accent)
+                  Text('dsh 正在输入…')
+                    .fontSize(12)
+                    .fontColor(this.t().textSecondary)
+                }
+                .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+                .borderRadius(999)
+                .backgroundColor(this.t().navActiveBg)
+                .border({ width: 1, color: this.t().border })
+                .margin({ top: 10 })
+                .alignSelf(ItemAlign.Start)
+              }
               if (this.echoText !== '') {
                 Column() {
                   Text(this.echoText)
@@ -1284,6 +1756,7 @@ export struct WorkspaceChatView {
         .edgeEffect(EdgeEffect.Spring)
       }
         this.inputBar()
+        }
       }
       .width('100%')
       .constraintSize({ maxWidth: 860 })
@@ -1308,6 +1781,7 @@ export struct WorkspaceChatView {
         .justifyContent(FlexAlign.Center)
         .onClick(() => {
           this.inChat = false;
+          this.setBackDepth(0);
         })
       }
 
@@ -1659,50 +2133,91 @@ export struct WorkspaceChatView {
 
   @Builder
   inputBar() {
-    Row({ space: 10 }) {
-      // 导轨等宽占位：输入框与消息内容严格左对齐
-      Column()
-        .width(30)
-
-      TextInput({ text: this.inputText, placeholder: this.selectedId === '' ? '先选择一个会话…' : '输入新任务，发送给 dsh…' })
-        .layoutWeight(1)
-        .height(46)
-        .fontSize(14)
-        .fontColor(this.t().textPrimary)
-        .placeholderColor(this.t().textTertiary)
+    Column() {
+      if (this.attachBase64 !== '') {
+        Row({ space: 8 }) {
+          Text('🖼')
+            .fontSize(15)
+          Text(this.attachName)
+            .fontSize(12)
+            .fontColor(this.t().textSecondary)
+            .layoutWeight(1)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text('✕')
+            .fontSize(13)
+            .fontColor(this.t().textSecondary)
+            .onClick(() => {
+              this.attachBase64 = '';
+              this.attachName = '';
+              this.attachMediaType = '';
+            })
+        }
+        .width('100%')
+        .padding({ left: 14, right: 14, top: 8, bottom: 8 })
+        .borderRadius(12)
         .backgroundColor(this.t().navActiveBg)
-        .borderRadius(14)
-        .padding({ left: 16, right: 16 })
-        .enabled(this.selectedId !== '')
-        .onChange((v: string) => {
-          this.inputText = v;
+        .margin({ bottom: 6 })
+      }
+
+      Row({ space: 10 }) {
+        // 导轨等宽占位：输入框与消息内容严格左对齐
+        Column()
+          .width(30)
+
+        Column() {
+          Text('📎')
+            .fontSize(17)
+            .fontColor(this.attachBase64 !== '' ? this.t().accent : this.t().textSecondary)
+        }
+        .width(40)
+        .height(46)
+        .justifyContent(FlexAlign.Center)
+        .onClick(() => {
+          this.pickImage();
         })
-        .onSubmit(() => {
+
+        TextInput({ text: this.inputText, placeholder: this.selectedId === '' ? '先选择一个会话…' : '输入新任务，发送给 dsh…' })
+          .layoutWeight(1)
+          .height(46)
+          .fontSize(14)
+          .fontColor(this.t().textPrimary)
+          .placeholderColor(this.t().textTertiary)
+          .backgroundColor(this.t().navActiveBg)
+          .borderRadius(14)
+          .padding({ left: 14, right: 14 })
+          .enabled(this.selectedId !== '')
+          .onChange((v: string) => {
+            this.inputText = v;
+          })
+          .onSubmit(() => {
+            this.sendCurrent();
+          })
+
+        Column() {
+          Text(this.sending ? '…' : '➤')
+            .fontSize(18)
+            .fontColor(this.canSend() ? this.t().onAccent : this.t().textTertiary)
+        }
+        .width(46)
+        .height(46)
+        .borderRadius(14)
+        .justifyContent(FlexAlign.Center)
+        .linearGradient({
+          angle: 135,
+          colors: this.canSend()
+            ? [[this.t().accent, 0.0], [this.t().accent2, 1.0]]
+            : [[this.t().navActiveBg, 0.0], [this.t().navActiveBg, 1.0]],
+        })
+        .opacity(this.canSend() ? 1.0 : 0.7)
+        .onClick(() => {
           this.sendCurrent();
         })
-
-      Column() {
-        Text(this.sending ? '…' : '➤')
-          .fontSize(18)
-          .fontColor(this.canSend() ? this.t().onAccent : this.t().textTertiary)
       }
-      .width(46)
-      .height(46)
-      .borderRadius(14)
-      .justifyContent(FlexAlign.Center)
-      .linearGradient({
-        angle: 135,
-        colors: this.canSend()
-          ? [[this.t().accent, 0.0], [this.t().accent2, 1.0]]
-          : [[this.t().navActiveBg, 0.0], [this.t().navActiveBg, 1.0]],
-      })
-      .opacity(this.canSend() ? 1.0 : 0.7)
-      .onClick(() => {
-        this.sendCurrent();
-      })
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
     }
     .width('100%')
-    .alignItems(VerticalAlign.Center)
     .padding({ bottom: px2vp(this.bottomAvoidPx) + 4 })
     .border({ width: { top: 0.5 }, color: this.t().border })
   }

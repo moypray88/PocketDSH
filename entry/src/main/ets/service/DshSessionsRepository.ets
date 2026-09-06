@@ -177,16 +177,24 @@ interface WireTurnStartData {
   turn?: number;
 }
 
+/** session/create 的请求（源码类型 SessionCreateRequest：支持工作目录）。 */
+interface WireCreateRequest {
+  cwd?: string;
+}
+
 /** session/create 的返回。 */
 interface WireCreateValue {
   sessionId?: string;
   agentPreset?: string;
 }
 
-/** session/prompt 的内容块。 */
+/** session/prompt 的内容块（文本 + 图片内嵌）。 */
 interface WirePromptPart {
   type: string;
-  text: string;
+  text?: string;
+  mediaType?: string;
+  data?: string;
+  name?: string;
 }
 
 /** session/prompt 的请求（web 端真实发送路径，实测通过）。 */
@@ -347,6 +355,9 @@ export class DshSessionsRepository {
     const records: WireRecord[] = parsed.records !== undefined && parsed.records !== null ? parsed.records : [];
     const entries: ChatEntryVm[] = [];
     const toolByCallId: Map<string, ChatEntryVm> = new Map<string, ChatEntryVm>();
+    // 生成中判定：存在晚于最后一条 user/assistant 消息的 chunk 流事件
+    let maxContentSeq: number = -1;
+    let maxChunkSeq: number = -1;
 
     for (let i: number = 0; i < records.length; i++) {
       const rec: WireRecord = records[i];
@@ -362,6 +373,9 @@ export class DshSessionsRepository {
         const data: object = ev.data !== undefined && ev.data !== null ? ev.data : EMPTY_DATA;
 
       if (type === 'user/message') {
+        if (seq > maxContentSeq) {
+          maxContentSeq = seq;
+        }
         const d: WireUserEventData = data as WireUserEventData;
         // 只渲染真人消息：插件上下文（plugin）与技能目录（skill-catalog）等
         // 系统注入的伪用户消息不渲染，否则问题与回复之间会出现大段"空白墙"
@@ -387,6 +401,9 @@ export class DshSessionsRepository {
         // 工具步骤的空消息（无正文无思考）不渲染卡片，避免"你好"与回复之间出现成片空白
         if (stepText === '' && stepReasoning === '') {
           continue;
+        }
+        if (seq > maxContentSeq) {
+          maxContentSeq = seq;
         }
         entries.push(DshSessionsRepository.entry(ChatEntryKind.Assistant, seq, time,
           DshSessionsRepository.cleanNum(d.turn),
@@ -438,6 +455,10 @@ export class DshSessionsRepository {
         const turn: number = DshSessionsRepository.cleanNum(d.turn);
         entries.push(DshSessionsRepository.entry(ChatEntryKind.Turn, seq, time, turn,
           '第 ' + turn + ' 轮', '', 0, 0, '', null));
+      } else if (type.indexOf('chunk') >= 0) {
+        if (seq > maxChunkSeq) {
+          maxChunkSeq = seq;
+        }
       }
       // 其余事件类型（assistant/chunk、chunkrow/*、agent/inbox/*、step/*、
       // permission/*、sandbox/*、approval/*、request/*、web/*、session/* 杂项、turn/end）
@@ -452,29 +473,52 @@ export class DshSessionsRepository {
       entries: entries,
       hasMore: parsed.hasMore === true,
       oldestSeq: entries.length > 0 ? entries[0].seq : 0,
+      generating: maxChunkSeq > maxContentSeq,
     };
     return page;
   }
 
   /**
    * 向指定会话发送一条消息（session/prompt，web 端同路径）。
-   * 成功后消息进入 agent inbox，会话事件开始增长，调用方轮询历史即可看到回复。
+   * @param imageBase64 图片的 base64（不含 data: 前缀）；空串表示纯文本
+   * @param imageMediaType 如 'image/png' / 'image/jpeg'
+   * @param imageName 原始文件名（可选）
    */
-  static async sendText(ctx: common.Context, sessionId: string, text: string): Promise<void> {
-    const part: WirePromptPart = { type: 'text', text: text };
+  static async sendText(ctx: common.Context, sessionId: string, text: string,
+    imageBase64: string, imageMediaType: string, imageName: string): Promise<void> {
+    const parts: WirePromptPart[] = [];
+    const textPart: WirePromptPart = { type: 'text', text: text };
+    parts.push(textPart);
+    if (imageBase64 !== '') {
+      const imgPart: WirePromptPart = {
+        type: 'image',
+        mediaType: imageMediaType,
+        data: imageBase64,
+        name: imageName,
+      };
+      parts.push(imgPart);
+    }
     const req: WirePromptRequest = {
       requestId: 'app-' + Date.now().toString(16) + '-' + Math.floor(Math.random() * 100000000).toString(16),
       sessionId: sessionId,
       mode: 'queue',
-      content: [part],
+      content: parts,
       clientTimeZone: 'Etc/GMT-8',
     };
     await DshApiClient.call(ctx, 'session/prompt', 'request', req);
   }
 
-  /** 创建新会话，返回可立即用于 openSession 的摘要。 */
-  static async createSession(ctx: common.Context): Promise<SessionSummaryVm> {
-    const value: object = await DshApiClient.call(ctx, 'session/create', 'request', EMPTY_DATA);
+  /**
+   * 创建新会话（延迟创建策略：仅在用户发出第一条消息时调用）。
+   * @param cwd 工作目录；空串表示服务器默认
+   */
+  static async createSession(ctx: common.Context, cwd: string): Promise<SessionSummaryVm> {
+    let reqObj: object = EMPTY_DATA;
+    if (cwd !== '') {
+      const req: WireCreateRequest = { cwd: cwd };
+      reqObj = req;
+    }
+    const value: object = await DshApiClient.call(ctx, 'session/create', 'request', reqObj);
     const parsed: WireCreateValue = value as WireCreateValue;
     const s: SessionSummaryVm = {
       sessionId: DshSessionsRepository.cleanStr(parsed.sessionId),

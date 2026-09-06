@@ -5,6 +5,7 @@ import promptAction from '@ohos.promptAction';
 import common from '@ohos.app.ability.common';
 import { DshConfigStore } from '../service/DshConfigStore';
 import { HealthMonitor } from '../service/HealthMonitor';
+import { DshApiClient } from '../service/DshApiClient';
 import { DshSessionsRepository } from '../service/DshSessionsRepository';
 import { DshConfigData, HealthSnapshot } from '../model/DshTypes';
 import { SessionSummaryVm } from '../model/SessionVms';
@@ -53,6 +54,8 @@ export struct HomeView {
   /** 合盖外屏紧凑模式：快捷任务两列、指标行允许换行。 */
   @Prop coverMode: boolean = false;
   onEnterConsole: () => void = () => {};
+  /** 跳转设置页（登录态到期提醒用）。 */
+  onGoSettings: () => void = () => {};
 
   @StorageProp('themeIsDark') dark: boolean = true;
 
@@ -61,6 +64,8 @@ export struct HomeView {
   @State serverUrl: string = '';
   /** 近期会话（真实数据，拉取失败为空走占位文案）。 */
   @State recentSessions: SessionSummaryVm[] = [];
+  /** 登录态剩余天数；-1 未知，0 已过期。 */
+  @State cookieDaysLeft: number = -1;
 
   private timerId: number = -1;
   /** 防止探测重入（手动刷新撞上定时刷新）。 */
@@ -147,6 +152,11 @@ export struct HomeView {
       }
       AppStorage.setOrCreate('homeServerCache', data.serverUrl);
       const password: string = await DshConfigStore.getPassword();
+      const mintedAt: number = await DshConfigStore.getCookieMintedAt(ctx);
+      const days: number = DshApiClient.cookieDaysLeft(mintedAt);
+      if (days !== this.cookieDaysLeft) {
+        this.cookieDaysLeft = days;
+      }
       const snap: HealthSnapshot = await HealthMonitor.probe(data.serverUrl, data.username, password);
       if (!this.sameHealth(this.health, snap)) {
         this.health = snap;
@@ -217,6 +227,7 @@ export struct HomeView {
       Row() {
         Column() {
           this.header()
+          this.expiryBanner()
           this.heroCard()
           this.quickTaskSection()
           this.recentSessionsCard()
@@ -267,6 +278,48 @@ export struct HomeView {
     }
     .width('100%')
     .alignItems(VerticalAlign.Center)
+  }
+
+  /** 登录态到期预警（剩余 ≤5 天或已过期时显示）。 */
+  @Builder
+  expiryBanner() {
+    if (this.cookieDaysLeft >= 0 && this.cookieDaysLeft <= 5) {
+      Row({ space: 12 }) {
+        Text('⚠️')
+          .fontSize(18)
+        Column({ space: 2 }) {
+          Text(this.cookieDaysLeft === 0 ? '登录态已过期' : '登录态将于 ' + this.cookieDaysLeft + ' 天后到期')
+            .fontSize(13)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.t().warn)
+          Text('到设置页重新粘贴 dsh 令牌即可续期 30 天')
+            .fontSize(11)
+            .fontColor(this.t().textSecondary)
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+
+        Column() {
+          Text('去更新')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.t().warn)
+        }
+        .padding({ top: 8, bottom: 8, left: 12, right: 12 })
+        .borderRadius(10)
+        .border({ width: 1, color: this.t().warn })
+        .onClick(() => {
+          this.onGoSettings();
+        })
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+      .padding(14)
+      .borderRadius(16)
+      .backgroundColor(this.dark ? 'rgba(251,191,36,0.10)' : 'rgba(180,83,9,0.08)')
+      .border({ width: 1, color: this.dark ? 'rgba(251,191,36,0.35)' : '#F5E0B8' })
+      .margin({ top: 16 })
+    }
   }
 
   @Builder
@@ -396,7 +449,7 @@ export struct HomeView {
       this.metricsBlock()
 
       Column() {
-        Text('进入控制台 ▸')
+        Text('＋ 新建任务 ▸')
           .fontSize(16)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.t().onAccent)
@@ -411,10 +464,13 @@ export struct HomeView {
       })
       .margin({ top: 20 })
       .onClick(() => {
+        // 直接新建会话并进入工作台
+        const t = AppStorage.get<number>('chatCreateTick') ?? 0;
+        AppStorage.setOrCreate('chatCreateTick', t + 1);
         this.onEnterConsole();
       })
 
-      Text('免登录 · 自动注入凭据 · 全功能 dsh 控制台')
+      Text('一键直达 dsh 全功能对话 · 自动免登录')
         .fontSize(12)
         .fontColor(this.t().textTertiary)
         .width('100%')

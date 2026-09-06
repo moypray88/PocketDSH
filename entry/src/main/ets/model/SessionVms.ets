@@ -80,6 +80,8 @@ export interface HistoryPageVm {
   hasMore: boolean;
   /** 本页最旧一条的 seq；空页为 0。 */
   oldestSeq: number;
+  /** 助手正在生成中（存在晚于最后一条消息的 chunk 流事件）。 */
+  generating: boolean;
 }
 
 /** 模型目录单项。 */

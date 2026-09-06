@@ -40,3 +40,12 @@ export const KEY_THEME_IS_DARK: string = 'themeIsDark'
 export const KEY_THEME_MODE: string = 'themeMode'
 export const KEY_CONFIG_READY: string = 'configReady'
 export const KEY_TOKEN_TICK: string = 'tokenRefreshTick'
+
+/** 系统侧滑/返回键协调：Index.onBackPress 与二级视图之间的信号键。 */
+export const KEY_CHAT_BACK_DEPTH: string = 'chatBackDepth'
+export const KEY_BACK_POP_TICK: string = 'backPopTick'
+export const KEY_ONB_STEP: string = 'onbStep'
+export const KEY_ONB_BACK_TICK: string = 'onbBackTick'
+
+/** 跨页动作信号：请求工作台新建会话（首页"新建任务"/Tab"新建对话"）。 */
+export const KEY_CHAT_CREATE_TICK: string = 'chatCreateTick'

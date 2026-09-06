@@ -8,6 +8,9 @@ export const SECURE_ALIAS_PASSWORD: string = 'dsh_basic_password';
 /** 资产库别名：dsh 令牌 URL（含 token 参数的完整地址）。 */
 export const SECURE_ALIAS_TOKEN: string = 'dsh_web_token_url';
 
+/** 资产库别名：dsh 会话 Cookie（持久化后 APP 重启可免换票）。 */
+export const SECURE_ALIAS_COOKIE: string = 'dsh_session_cookie';
+
 /**
  * SecureStore：敏感信息（密码 / 令牌 URL）写入系统资产库，由系统加密保护。
  * 读不到或发生任何异常时一律返回空字符串，调用方无需处理资产库错误细节。
