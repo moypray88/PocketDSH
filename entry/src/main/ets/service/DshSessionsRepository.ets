@@ -108,9 +108,15 @@ interface WireContentBlock {
   text?: string;
 }
 
+/** user/message 的来源标识。 */
+interface WireUserSource {
+  kind?: string;
+}
+
 /** user/message 的 data。 */
 interface WireUserEventData {
   content?: WireContentBlock[];
+  source?: WireUserSource;
 }
 
 /** assistant/message 的 data。 */
@@ -357,8 +363,18 @@ export class DshSessionsRepository {
 
       if (type === 'user/message') {
         const d: WireUserEventData = data as WireUserEventData;
+        // 只渲染真人消息：插件上下文（plugin）与技能目录（skill-catalog）等
+        // 系统注入的伪用户消息不渲染，否则问题与回复之间会出现大段"空白墙"
+        const src: WireUserSource | null = d.source !== undefined && d.source !== null ? d.source : null;
+        const kind: string = src === null ? '' : DshSessionsRepository.cleanStr(src.kind);
+        const joined: string = DshSessionsRepository.joinBlocks(d.content, 'text');
+        const isHuman: boolean = kind === 'user'
+          || (kind === '' && !joined.startsWith('<system-reminder>') && !joined.startsWith('Current runtime context.'));
+        if (!isHuman) {
+          continue;
+        }
         entries.push(DshSessionsRepository.entry(ChatEntryKind.User, seq, time, 0,
-          DshSessionsRepository.joinBlocks(d.content, 'text'), '', 0, 0, '', null));
+          joined, '', 0, 0, '', null));
       } else if (type === 'assistant/message') {
         const d: WireAssistantEventData = data as WireAssistantEventData;
         const msg: WireAssistantMessage = d.message !== undefined && d.message !== null
@@ -366,10 +382,16 @@ export class DshSessionsRepository {
         const usage: WireUsage = d.usage !== undefined && d.usage !== null
           ? d.usage : EMPTY_USAGE;
         const source: WireAssistantSource | null = msg.source !== undefined && msg.source !== null ? msg.source : null;
+        const stepText: string = DshSessionsRepository.joinBlocks(msg.content, 'text');
+        const stepReasoning: string = DshSessionsRepository.joinBlocks(msg.content, 'reasoning');
+        // 工具步骤的空消息（无正文无思考）不渲染卡片，避免"你好"与回复之间出现成片空白
+        if (stepText === '' && stepReasoning === '') {
+          continue;
+        }
         entries.push(DshSessionsRepository.entry(ChatEntryKind.Assistant, seq, time,
           DshSessionsRepository.cleanNum(d.turn),
-          DshSessionsRepository.joinBlocks(msg.content, 'text'),
-          DshSessionsRepository.joinBlocks(msg.content, 'reasoning'),
+          stepText,
+          stepReasoning,
           DshSessionsRepository.cleanNum(usage.inputTokens),
           DshSessionsRepository.cleanNum(usage.outputTokens),
           source === null ? '' : DshSessionsRepository.cleanStr(source.model),

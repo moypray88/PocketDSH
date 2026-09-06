@@ -66,6 +66,9 @@ export struct WorkspaceChatView {
   @State renameOpen: boolean = false;
   @State renameText: string = '';
   @State renameTargetId: string = '';
+  /** 乐观回显：发送瞬间本地先显示，服务器确认后移除。 */
+  @State echoText: string = '';
+  @State echoSending: boolean = false;
 
   private scroller: Scroller = new Scroller();
   private inFlight: boolean = false;
@@ -74,13 +77,15 @@ export struct WorkspaceChatView {
   private autoTimer: number = -1;
   /** 发送后的短程追踪定时器。 */
   private pollTimer: number = -1;
+  /** 静默同步连续失败计数。 */
+  private chaseFailCount: number = 0;
 
   private t(): ThemeColors {
     return ThemeManager.palette(this.dark);
   }
 
   aboutToAppear(): void {
-    this.refreshList();
+    this.refreshList(true);
     this.loadHidden();
     this.autoTimer = setInterval(() => {
       this.silentRefresh();
@@ -109,12 +114,15 @@ export struct WorkspaceChatView {
 
   /* ───────────── 数据加载 ───────────── */
 
-  private async refreshList(): Promise<void> {
+  /** 拉取会话列表；manual=false 时静默（不闪 Loading），供自动刷新调用。 */
+  private async refreshList(manual: boolean): Promise<void> {
     if (this.inFlight) {
       return;
     }
     this.inFlight = true;
-    this.listState = ListState.Loading;
+    if (manual) {
+      this.listState = ListState.Loading;
+    }
     try {
       const ctx: common.Context = getContext(this);
       this.sessions = await DshSessionsRepository.listSessions(ctx);
@@ -134,6 +142,11 @@ export struct WorkspaceChatView {
     this.expandedSeqs = [];
     this.loadedOlder = false;
     this.modelOverride = '';
+    this.echoText = '';
+    if (this.pollTimer >= 0) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = -1;
+    }
     await this.reloadHistory();
     // 首页快捷任务复制后预填到输入框（只预填不发送）
     const prefill: string | undefined = AppStorage.get<string>('chatPrefill');
@@ -153,6 +166,8 @@ export struct WorkspaceChatView {
       this.hasMore = page.hasMore;
       this.oldestSeq = page.oldestSeq;
       this.chatState = ChatState.Ready;
+      this.echoText = '';
+      this.chaseFailCount = 0;
       this.scrollToBottom();
     } catch (err) {
       this.errorMsg = (err as BusinessError).message;
@@ -169,24 +184,53 @@ export struct WorkspaceChatView {
     await this.chaseNewMessages();
   }
 
-  /** 拉取最新一页：仅在条目变多时原位更新（无 Loading 态、不清屏）。 */
+  /** 当前已显示的最大事件 seq（空列表为 -1）。 */
+  private maxSeq(): number {
+    if (this.entries.length === 0) {
+      return -1;
+    }
+    return this.entries[this.entries.length - 1].seq;
+  }
+
+  /** 拉取最新一页：按最大 seq 判断更新，尾部增量合并且不清掉已翻的早期历史。 */
   private async chaseNewMessages(): Promise<void> {
-    if (this.chatState !== ChatState.Ready || this.loadedOlder || this.selectedId === '') {
+    if (this.chatState !== ChatState.Ready || this.selectedId === '') {
       return;
     }
     try {
       const ctx: common.Context = getContext(this);
       // throughSeq 传 -1：由仓库层自动反查最新游标，确保能拿到新消息
       const page: HistoryPageVm = await DshSessionsRepository.loadHistory(ctx, this.selectedId, -1, -1);
-      if (page.entries.length > this.entries.length) {
-        this.entries = page.entries;
+      const pageMax: number = page.entries.length > 0 ? page.entries[page.entries.length - 1].seq : -1;
+      if (pageMax > this.maxSeq()) {
+        if (!this.loadedOlder) {
+          // 未翻过页：整页替换（含滚动贴底）
+          this.entries = page.entries;
+        } else {
+          // 翻过页：只追加更新的尾部，保留已加载的早期历史
+          const tail: ChatEntryVm[] = [];
+          for (let i: number = 0; i < page.entries.length; i++) {
+            if (page.entries[i].seq > this.maxSeq()) {
+              tail.push(page.entries[i]);
+            }
+          }
+          this.entries = this.entries.concat(tail);
+        }
         this.hasMore = page.hasMore;
-        this.oldestSeq = page.oldestSeq;
+        if (!this.loadedOlder) {
+          this.oldestSeq = page.oldestSeq;
+        }
+        this.echoText = '';
         this.scrollToBottom();
-        this.refreshList();
+        this.refreshList(false);
       }
+      this.chaseFailCount = 0;
     } catch (err) {
-      // 静默刷新失败不打扰用户，等待下个周期或手动刷新
+      // 连续失败时提示一次，不再完全静默
+      this.chaseFailCount++;
+      if (this.chaseFailCount === 3) {
+        promptAction.showToast({ message: '同步变慢了，请检查手机到服务器的网络' });
+      }
     }
   }
 
@@ -236,9 +280,16 @@ export struct WorkspaceChatView {
   }
 
   private scrollToBottom(): void {
+    // 分阶段滚动：重 Markdown 渲染需要多帧布局，单次定时会抢跑停在半空
     setTimeout(() => {
       this.scroller.scrollEdge(Edge.Bottom);
     }, 120);
+    setTimeout(() => {
+      this.scroller.scrollEdge(Edge.Bottom);
+    }, 400);
+    setTimeout(() => {
+      this.scroller.scrollEdge(Edge.Bottom);
+    }, 900);
   }
 
   /** 展开态收起/展开左侧会话列表，对话区最大化。 */
@@ -278,23 +329,28 @@ export struct WorkspaceChatView {
     this.expandedSeqs = next;
   }
 
-  /** 发送当前输入：成功后清空输入、刷新列表与会话（2 秒后拉取 dsh 的处理进展）。 */
+  /** 发送当前输入：本地立即回显，服务器确认后由轮询替换为真实消息。 */
   private async sendCurrent(): Promise<void> {
     const text: string = this.inputText.trim();
     if (text === '' || this.sending || this.selectedId === '') {
       return;
     }
     this.sending = true;
+    this.echoText = text;
+    this.echoSending = true;
     try {
       const ctx: common.Context = getContext(this);
       await DshSessionsRepository.sendText(ctx, this.selectedId, text);
       this.inputText = '';
+      this.echoSending = false;
       promptAction.showToast({ message: '已发送，正在等待 dsh 处理' });
-      this.refreshList();
+      this.refreshList(false);
       // 静默增量追踪回复（不整页刷新、不闪屏）
       this.pollAfterSend();
     } catch (err) {
       const e: BusinessError = err as BusinessError;
+      this.echoText = '';
+      this.echoSending = false;
       promptAction.showToast({ message: '发送失败：' + e.message });
     } finally {
       this.sending = false;
@@ -311,7 +367,7 @@ export struct WorkspaceChatView {
       const ctx: common.Context = getContext(this);
       const s: SessionSummaryVm = await DshSessionsRepository.createSession(ctx);
       promptAction.showToast({ message: '新会话已创建' });
-      await this.refreshList();
+      await this.refreshList(true);
       await this.openSession(s);
     } catch (err) {
       const e: BusinessError = err as BusinessError;
@@ -604,7 +660,7 @@ export struct WorkspaceChatView {
       const ctx: common.Context = getContext(this);
       await DshSessionsRepository.cancelSession(ctx, this.selectedId);
       promptAction.showToast({ message: '已发送停止指令' });
-      this.refreshList();
+      this.refreshList(false);
       setTimeout(() => {
         this.chaseNewMessages();
       }, 1500);
@@ -901,7 +957,7 @@ export struct WorkspaceChatView {
         .justifyContent(FlexAlign.Center)
         .backgroundColor(this.t().navActiveBg)
         .onClick(() => {
-          this.refreshList();
+          this.refreshList(true);
         })
       }
       .width('100%')
@@ -969,7 +1025,7 @@ export struct WorkspaceChatView {
             .backgroundColor(this.t().navActiveBg)
             .margin({ top: 14 })
             .onClick(() => {
-              this.refreshList();
+              this.refreshList(true);
             })
         }
         .width('100%')
@@ -1138,7 +1194,7 @@ export struct WorkspaceChatView {
             .backgroundColor(this.t().navActiveBg)
             .margin({ top: 14 })
             .onClick(() => {
-              this.reloadHistory();
+              this.refreshList(true);
             })
         }
         .width('100%')
@@ -1195,9 +1251,33 @@ export struct WorkspaceChatView {
                 .width('100%')
                 .alignItems(VerticalAlign.Top)
               }, (e: ChatEntryVm) => '' + e.seq)
+              if (this.echoText !== '') {
+                Column() {
+                  Text(this.echoText)
+                    .fontSize(15)
+                    .fontColor(this.t().textPrimary)
+                    .lineHeight(22)
+                  if (this.echoSending) {
+                    Text('发送中…')
+                      .fontSize(10)
+                      .fontColor(this.t().textTertiary)
+                      .margin({ top: 4 })
+                  }
+                }
+                .constraintSize({ maxWidth: this.coverMode ? '86%' : '70%' })
+                .padding({ left: 20, right: 20, top: 14, bottom: 14 })
+                .borderRadius({ topLeft: 18, topRight: 18, bottomLeft: 18, bottomRight: 5 })
+                .backgroundColor(this.dark ? 'rgba(34,211,238,0.14)' : '#E8F0FE')
+                .border({ width: 1, color: this.dark ? 'rgba(34,211,238,0.32)' : '#C9DDF9' })
+                .margin({ top: 10 })
+                .alignSelf(ItemAlign.End)
+              }
             }
             .width('100%')
-            .padding({ bottom: 12 })
+            // 短会话时内容锚定底部、紧贴输入框；长会话正常滚动
+            .constraintSize({ minHeight: '100%' })
+            .justifyContent(FlexAlign.End)
+            .padding({ left: 14, right: 14, bottom: 12 })
         }
         .layoutWeight(1)
         .scrollBar(BarState.Off)
@@ -1327,7 +1407,7 @@ export struct WorkspaceChatView {
     .border({ width: { bottom: 0.5 }, color: this.t().border })
   }
 
-  /** 左侧时间线导轨：节点圆点 + 连续竖线（最后一条无线），消息挂在节点右侧。 */
+  /** 左侧时间线节点：仅圆点（连线在无界滚动容器里会把行高撑爆，弃用）。 */
   @Builder
   railNode(e: ChatEntryVm, idx: number) {
     Column() {
@@ -1357,13 +1437,6 @@ export struct WorkspaceChatView {
           .height(8)
           .fill(this.t().accent2)
           .margin({ top: 14 })
-      }
-      if (idx < this.entries.length - 1) {
-        Column()
-          .width(1)
-          .layoutWeight(1)
-          .backgroundColor(this.t().border)
-          .margin({ top: 3 })
       }
     }
     .width(18)

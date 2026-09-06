@@ -4,6 +4,7 @@ import promptAction from '@ohos.promptAction';
 import mediaquery from '@ohos.mediaquery';
 import { BusinessError } from '@ohos.base';
 import { DshConfigStore } from '../service/DshConfigStore';
+import { DshApiClient } from '../service/DshApiClient';
 import { ThemeColors, ThemeManager } from '../theme/Theme';
 import { KEY_CONFIG_READY, KEY_THEME_MODE, KEY_TOKEN_TICK, THEME_DARK, THEME_FOLLOW_SYSTEM, THEME_LIGHT } from '../model/DshTypes';
 
@@ -72,8 +73,9 @@ export struct SettingsView {
     this.savingToken = true;
     try {
       await DshConfigStore.saveTokenUrl(url);
-      // 清掉旧签名 Cookie，工作台将用新令牌重新登录。
+      // 清掉旧签名 Cookie（WebView 通道）与原生客户端内存 Cookie，工作台将用新令牌重新登录。
       web_webview.WebCookieManager.clearAllCookiesSync();
+      DshApiClient.clearCookie();
       const n = AppStorage.get<number>(KEY_TOKEN_TICK) ?? 0;
       AppStorage.setOrCreate(KEY_TOKEN_TICK, n + 1);
       this.hasToken = true;
@@ -113,6 +115,7 @@ export struct SettingsView {
     try {
       await DshConfigStore.wipe(getContext(this));
       web_webview.WebCookieManager.clearAllCookiesSync();
+      DshApiClient.clearCookie();
       // Index 监听该键，置 false 后自动回到引导页。
       AppStorage.setOrCreate(KEY_CONFIG_READY, false);
       promptAction.showToast({ message: '已清除全部数据' });
