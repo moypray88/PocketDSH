@@ -1,18 +1,20 @@
 import { HomeView } from '../views/HomeView';
 import { WorkspaceView } from '../views/WorkspaceView';
 import { WorkspaceChatView } from '../views/WorkspaceChatView';
+import { ReportView } from '../views/ReportView';
 import { SettingsView } from '../views/SettingsView';
 import { OnboardingView } from '../views/OnboardingView';
 import { ThemeColors, ThemeManager } from '../theme/Theme';
 import { DshEventClient } from '../service/DshEventClient';
 import { PendingAskVm } from '../model/SessionVms';
-import { KEY_ASK_JUMP_ID, KEY_ASK_JUMP_TICK, KEY_ASK_TICK, KEY_CHAT_SELECTED_ID, KEY_CONFIG_READY, KEY_CUR_TAB } from '../model/DshTypes';
+import { KEY_ASK_JUMP_ID, KEY_ASK_JUMP_TICK, KEY_ASK_TICK, KEY_CHAT_SELECTED_ID, KEY_CONFIG_READY, KEY_CUR_TAB, KEY_REPORT_BACK_DEPTH, KEY_REPORT_BACK_TICK } from '../model/DshTypes';
 
 enum TabId {
   Sessions = 0,
   Home = 1,
   Console = 2,
   Settings = 3,
+  Reports = 4,
 }
 
 /** 应用外壳：阔折叠展开态走左侧导航栏，合盖外屏走底部 Tab，断点自动切换。 */
@@ -129,6 +131,14 @@ struct Index {
         return true;
       }
     }
+    if (this.cur === TabId.Reports) {
+      const rd = AppStorage.get<number>(KEY_REPORT_BACK_DEPTH) ?? 0;
+      if (rd > 0) {
+        const rt = AppStorage.get<number>(KEY_REPORT_BACK_TICK) ?? 0;
+        AppStorage.setOrCreate(KEY_REPORT_BACK_TICK, rt + 1);
+        return true;
+      }
+    }
     return false;
   }
 
@@ -157,6 +167,7 @@ struct Index {
             this.railItem(TabId.Home, '◈', '首页')
             this.railItem(TabId.Sessions, '◧', '会话')
             this.railAction('✎', '新建对话')
+            this.railItem(TabId.Reports, '▦', '策略报告')
             this.railItem(TabId.Settings, '⚙', '设置')
             Blank()
             Column() {
@@ -346,26 +357,6 @@ struct Index {
     })
   }
 
-  /** 动作型底栏项（新建）。 */
-  @Builder
-  barAction(glyph: string, label: string) {
-    Column() {
-      Text(glyph)
-        .fontSize(19)
-        .fontColor(this.t().accent2)
-      Text(label)
-        .fontSize(9)
-        .margin({ top: 1 })
-        .fontColor(this.t().textSecondary)
-    }
-    .layoutWeight(1)
-    .constraintSize({ minHeight: 30 })
-    .justifyContent(FlexAlign.Center)
-    .onClick(() => {
-      this.requestNewChat();
-    })
-  }
-
   @Builder
   content() {
     Stack() {
@@ -399,6 +390,11 @@ struct Index {
         .height('100%')
         .visibility(this.cur === TabId.Console ? Visibility.Visible : Visibility.None)
 
+      ReportView()
+        .width('100%')
+        .height('100%')
+        .visibility(this.cur === TabId.Reports ? Visibility.Visible : Visibility.None)
+
       SettingsView({
         onOpenConsole: () => {
           this.cur = TabId.Console;
@@ -417,7 +413,7 @@ struct Index {
     Row() {
       this.barItem(TabId.Home, '◈', '首页')
       this.barItem(TabId.Sessions, '◧', '会话')
-      this.barAction('✎', '新建')
+      this.barItem(TabId.Reports, '▦', '策略报告')
       this.barItem(TabId.Settings, '⚙', '设置')
     }
     .width('100%')

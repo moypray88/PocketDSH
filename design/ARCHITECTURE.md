@@ -15,12 +15,15 @@
 ┌─────────────────────── 华为 Pure X Max（阔折叠）───────────────────────┐
 │                                                                      │
 │  ┌─ UI 层 ─────────────────────────────────────────────┐             │
-│  │ Index.ets（唯一 @Entry，4 Tab + 返回深度协调）         │             │
+│  │ Index.ets（唯一主 @Entry，5 Tab + 返回深度协调）          │             │
 │  │  ├ HomeView        首页：状态卡/新建任务/近期会话/到期预警 │             │
 │  │  ├ WorkspaceChatView  会话列表 + 对话（主力页面）       │             │
+│  │  ├ ReportView      策略报告：/reports/ 浏览器（WebView） │             │
 │  │  ├ SettingsView    主题/账号/令牌/隐藏恢复/完整版入口   │             │
 │  │  ├ OnboardingView  三步引导（地址→账号→令牌校验）       │             │
 │  │  └ WorkspaceView   WebView 内嵌 dsh 官方控制台（备用）  │             │
+│  │ ReportViewerAbility（第二 UIAbility）：会话链接拉起的        │             │
+│  │   独立报告窗口（singleton，ReportWindowPage + ReportBrowser）│             │
 │  ├─ 服务层 ─────────────────────────────────────────────┤             │
 │  │  DshApiClient        RPC 客户端（信封/认证/自愈）      │             │
 │  │  DshStreamClient     WebSocket 逐字流（remote.mux）   │             │
@@ -128,14 +131,18 @@ Headers: Content-Type: application/json
 | `session/list` | `_request` | `{}` | items 含 projections.asOfSeq（=page 游标上限）/values.title/cwd/sessionStats/turnOutline/modelSelection.lastUsed |
 | `session/page` | `request` | `{address:{kind:'session',sessionId},throughSeq,maxMessages,beforeSeq?}` | throughSeq **必须 ≤ 当前游标**；超限报 `past cursor N`（正则提取 N 反查）；999999999 合法（边界校验在 1e10 以上） |
 | `session/prompt` | `request` | `{requestId(客户端生成，防重),sessionId,mode:'queue',content:[{type:'text',text}\|{type:'image',mediaType,data:base64,name?}],clientTimeZone}` | **唯一真实发送通道**；返回 `{accepted:true}` |
-| `session/create` | `request` | `{cwd?}` | 返回 sessionId；**延迟创建**：仅首条消息发出时调用 |
+| `session/create` | `request` | `{cwd?}` 或 `{workspaceId?}`（**二选一互斥**） | 返回 sessionId；**延迟创建**：仅首条消息发出时调用。workspaceId 把会话归入该工作区（cwd 由服务器取工作区 path）；只传 cwd 的会话永远进「未分组」 |
 | `session/selectModel` | `request` | `{sessionId,provider,model}` | 切换后生效于下一条消息 |
 | `session/modelCatalog` | （裸 args） | `{}` | groups[].models[] + default |
 | `session/cancel` | `request` | `{sessionId}` | 停止生成 |
 | `session/rename` | `request` | `{sessionId,title}` | 服务器级重命名 |
 | ~~`commands/execute`~~ | 裸 | `{agentId,line,images}` | ⚠️ **陷阱：TUI 壳命令通道，返回 ok 但消息不进对话** |
+| `session/readImage` | `request` | `{path}`（服务器绝对路径） | **自建服务端扩展**：按已注册工作区目录白名单取图，返回 `{mediaType,bytes,data:base64}`；扩展名限 png/jpg/jpeg/webp/gif、20MiB 上限；工作区外/越权报 `session/image-denied`。App 用于 Markdown 里的本地路径图片 |
+| `agentPresets/list` | （空 args） | `{}` | Agent 预设名单（web「模式」选择器同源）：`{presets:[{id,trust,isDefault,name?,description?,broken?}],authorable}`；内置标准/PTC/极简/创造模式（中文名来自预设元数据）；`broken` 非空 = 组合不可用，App 过滤不展示 |
+| `agentPresets/select` | （**args 直传**） | `{"agent":<sessionId>,"agentPreset":<presetId>}` | 把预设应用到会话；**仅空白会话可用**（首条消息后报 `agent-preset/locked`），返回生效的 preset id。App 在草稿发送链路里 create→select→selectModel→prompt 依次执行 |
+| `session/attachment` | `request` | `{sessionId,attachmentId}` | 服务端校验该会话日志引用过此附件；返回 `{attachment:{mediaType,...},data:base64}`。App 用于消息内 image 内容块的取图渲染 |
 
-未接入已发现：`session/search`、`session/fork`、`session/attachment`（图片可 base64 直嵌，暂不需要）。
+未接入已发现：`session/search`、`session/fork`。
 
 ### 3.5 WebSocket 流式协议（remote.mux，全部实测）✅
 
@@ -258,13 +265,16 @@ outcome 三态:
 | `views/HomeView.ets` | 首页 | 缓存秒显（AppStorage homeXxxCache）+ 静默定时刷新（数据变化才写状态）+ 到期预警 + 快捷任务（预填工作台输入框） |
 | `views/OnboardingView.ets` | 引导 | 三步；令牌真实校验（GET 令牌 URL，401 时按响应体区分 dsh 令牌错误 vs nginx 密码错误）；自动获取令牌按钮；`onbStep` 同步支持侧滑回退 |
 | `views/SettingsView.ets` | 设置 | 主题三选（matchMedia 系统深浅）；令牌重贴（**同时清 WebView Cookie + 原生内存 Cookie**）；隐藏会话恢复；完整版入口；危险区 wipe |
-| `pages/Index.ets` | 外壳 | 4 Tab（首页/会话/新建动作/设置）；断点 640vp 双态；`onBackPress` 返回深度协调（浮层→对话/草稿→列表→引导步骤→才允许退出）；**configReady 启停 DshEventClient**；**dsh 待回答横幅**（非当前会话提示，点击跳转/✕本机隐藏） |
+| `pages/Index.ets` | 外壳 | 5 Tab（首页/会话/新建动作/策略报告/设置）；断点 640vp 双态；`onBackPress` 返回深度协调（浮层→对话/草稿→列表→引导步骤→报告后退→才允许退出）；**configReady 启停 DshEventClient**；**dsh 待回答横幅**（非当前会话提示，点击跳转/✕本机隐藏） |
+| `views/ReportBrowser.ets` | **报告浏览器组件**（Tab 与独立窗口共用） | 工具条（✕可选/‹›/地址胶囊点按复制/↻/⋮菜单）+ 顶部细进度线 + WebView（darkMode Off：报告自带浅色样式不破坏）+ `onHttpAuthRequest` 自动答 Basic + 原生 dsh Cookie `configCookieSync` 同步进罐（`/reports/` 免认证的兜底）+ 主资源错误覆盖卡（重试/复制）；`urlToLoad` @Prop @Watch 即换页（独立窗口 onNewWant 复用）；返回键经 `KEY_REPORT_BACK_TICK` 下发 webview 后退，无历史时窗口形态回调退出 |
+| `views/ReportView.ets` | 策略报告 Tab | 配置加载后打开 `{server}/reports/`（nginx autoindex 直显，实测免 Basic Auth）；深度写 `KEY_REPORT_BACK_DEPTH` 供外壳返回协调 |
+| `reportability/ReportViewerAbility.ets` | **独立报告窗口** | 第二 UIAbility（singleton，exported false）；`want.uri` → AppStorage（KEY_REPORT_WINDOW_URL/TICK），onCreate/onNewWant 统一入口；会话内同源链接由 `WorkspaceChatView.openReportLink` startAbility 拉起，已有窗口复用换页 |
 | `parse/MdParser.ets` | Markdown | 标题/有序无序列表/引用/分隔线/**表格**/代码围栏；行内 **粗体**、`行内码`、[链接]；未配对符号原样输出 |
 | `theme/Theme.ets` | 双主题 | 深空指挥舱 / 极简商务白 全量色板；`ThemeManager.apply(mode, systemDark)` 写 AppStorage `themeIsDark` |
 
 ### AppStorage 全局键
 
-`themeIsDark` `themeMode` `configReady` `tokenRefreshTick`（设置重贴令牌→WebView 通道重登）`chatBackDepth`/`backPopTick`（返回协调）`onbStep`/`onbBackTick`（引导返回）`chatCreateTick`（跨页新建请求）`bottomAvoidPx`（手势条避让）`chatPrefill`（首页快捷任务预填）`homeHealthCache`/`homeSessionsCache`/`homeServerCache`（首页秒显缓存）`askTick`（dsh 交互列表变更）`chatSelectedId`（工作台当前选中会话）`askJumpId`/`askJumpTick`（横幅跳转会话）
+`themeIsDark` `themeMode` `configReady` `tokenRefreshTick`（设置重贴令牌→WebView 通道重登）`chatBackDepth`/`backPopTick`（返回协调）`onbStep`/`onbBackTick`（引导返回）`chatCreateTick`（跨页新建请求）`bottomAvoidPx`（手势条避让）`chatPrefill`（首页快捷任务预填）`homeHealthCache`/`homeSessionsCache`/`homeServerCache`（首页秒显缓存）`askTick`（dsh 交互列表变更）`chatSelectedId`（工作台当前选中会话）`askJumpId`/`askJumpTick`（横幅跳转会话）`reportBackDepth`/`reportBackTick`（报告 Tab 返回协调）`reportWindowUrl`/`reportWindowTick`（独立报告窗口换页下发）
 
 ---
 
@@ -284,6 +294,7 @@ outcome 三态:
 | ADR-10 | **自动令牌端点：已设计、缓部署** | Cookie 持久化后其唯一价值=30 天一次的手动续期；安全边际（密码≈全权门票）不划算。到货提醒（ADR 见到期预警）替代 |
 | ADR-11 | **会话列表新鲜度 + 工作区分组（web 侧边栏同构）** | 工作台组件常驻（Index 只切 Visibility），`aboutToAppear` 仅启动时执行一次——web/PC 端新建的会话此前永远进不了手机列表（"手机会话不全"根因）。修复：Index 切 Tab 下发 `curTab`，工作台 @Watch 静默重拉；30s 定时器在列表页也静默刷新（失败且已有数据不闪错误态）；`session/list` 的 `blank` 项与 web 端一致过滤。列表结构对齐 web「工作区」：`workspace/follow` 流首帧 baseline（DshStreamClient 临时 WS 连接一次性拉取 + 60s 缓存）给出工作区表与 `archivedSessionIds`——按工作区分组渲染（成员按注册表手动排序、未分组按 recency 殿后、点头部折叠），归档会话各端一致隐藏；基线不可用时退化为平铺富信息行 |
 | ADR-12 | **dsh 主动交互（提问/审批）原生双 UI + 独立事件流** | 协议逆向自 web 插件源码并全链路实测（§3.6）。`DshEventClient` 用独立常驻 WS 连接承载 `$events` 流，不与 `DshStreamClient` 的会话 follow 互相牵连（follow 生命周期绑会话页，提问必须全局可达）；pending 列表放服务层 + `askTick` 广播，对话页弹卡（输入区上方）与 Index 全局横幅（跨页可达、点击跳会话）两级呈现；「去网页处理」走 `next` 让位语义，与 web 多端竞速模型（先答者胜、他端收 cancel）天然兼容；重连后旧代条目 5s 宽限等重投递，未重投按陈旧丢弃（服务端新一代会重发未决 waterfall，web 刷新后卡片重现即同机制） |
+| ADR-13 | **策略报告 = 浏览器式 WebView，会话链接拉起独立窗口** | 实测 `/reports/` 是 nginx autoindex 且**免 Basic Auth**（根路径才有 401），报告 HTML 自带 viewport 与完整浅色样式 → 落地页直接 WebView 直显 nginx 目录页（丑但可用，后续不佳再换原生目录导航），`darkMode(Off)` 防止强制反色破坏报告样式；会话内链接（Markdown 链接 + 裸 URL 自动链接化，`/reports/` 与 `/*.html` 站内路径也识别）同源 → **独立窗口**（第二 UIAbility，singleton + onNewWant 复用换页，不占会话 Tab 层级），外部链接 → 系统浏览器；认证双兜底：WebView `onHttpAuthRequest` 自动答 Basic + `DshApiClient.ensureWebCookie` 把原生 dsh Cookie 同步进 WebView 罐；Span 仅支持 onClick（无 onLongClick），链接复制走 ⋮ 菜单/地址胶囊点按 |
 
 ---
 

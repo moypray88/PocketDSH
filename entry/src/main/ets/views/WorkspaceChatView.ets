@@ -1,6 +1,8 @@
 /** 原生工作台：会话列表 + 对话历史（只读）。展开态双栏，合盖态两级导航。 */
 import promptAction from '@ohos.promptAction';
+import pasteboard from '@ohos.pasteboard';
 import common from '@ohos.app.ability.common';
+import Want from '@ohos.app.ability.Want';
 import fs from '@ohos.file.fs';
 import util from '@ohos.util';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
@@ -9,8 +11,9 @@ import { DshSessionsRepository } from '../service/DshSessionsRepository';
 import { DshStreamClient, DshStreamListener } from '../service/DshStreamClient';
 import { DshEventClient } from '../service/DshEventClient';
 import { DshConfigStore } from '../service/DshConfigStore';
-import { CatalogVm, ChatEntryKind, ChatEntryVm, HistoryPageVm, ModelGroupVm, ModelItemVm, PendingAskVm, QuestionOptionVm, QuestionVm, SessionSectionVm, SessionSummaryVm, ToolCallVm, WorkspaceBaselineVm, WorkspaceVm } from '../model/SessionVms';
+import { CatalogVm, ChatEntryKind, ChatEntryVm, HistoryPageVm, ModelGroupVm, ModelItemVm, PendingAskVm, PresetItemVm, QuestionOptionVm, QuestionVm, SessionSectionVm, SessionSummaryVm, ToolCallVm, WorkspaceBaselineVm, WorkspaceVm } from '../model/SessionVms';
 import { MdBlock, MdKind, MdRun, parseMarkdown } from '../parse/MdParser';
+import { MdImageView, AttachmentImageView } from './ChatImageView';
 import { ThemeColors, ThemeManager } from '../theme/Theme';
 import { KEY_ASK_JUMP_ID, KEY_ASK_JUMP_TICK, KEY_ASK_TICK, KEY_CHAT_SELECTED_ID, KEY_CUR_TAB, KEY_HIDDEN_TICK, TAB_SESSIONS } from '../model/DshTypes';
 
@@ -53,8 +56,8 @@ class ChatStreamListener implements DshStreamListener {
     this.owner.onStreamSnapshot(cursor);
   }
 
-  onUserMessage(seq: number, time: number, text: string): void {
-    this.owner.onStreamUserMessage(seq, time, text);
+  onUserMessage(seq: number, time: number, text: string, images: string[]): void {
+    this.owner.onStreamUserMessage(seq, time, text, images);
   }
 
   onLiveDelta(kind: string, text: string): void {
@@ -70,8 +73,8 @@ class ChatStreamListener implements DshStreamListener {
   }
 
   onAssistantMessage(seq: number, time: number, turn: number, text: string,
-    reasoning: string, usageIn: number, usageOut: number, model: string): void {
-    this.owner.onStreamAssistantMessage(seq, time, turn, text, reasoning, usageIn, usageOut, model);
+    reasoning: string, usageIn: number, usageOut: number, model: string, images: string[]): void {
+    this.owner.onStreamAssistantMessage(seq, time, turn, text, reasoning, usageIn, usageOut, model, images);
   }
 
   onToolCall(seq: number, time: number, turn: number, callId: string, name: string, args: string): void {
@@ -173,6 +176,10 @@ export struct WorkspaceChatView {
   /** 乐观回显：发送瞬间本地先显示，服务器确认后移除。 */
   @State echoText: string = '';
   @State echoSending: boolean = false;
+  /** 回显图片（data URI）；纯文本发送时为空串。 */
+  @State echoImage: string = '';
+  /** 全屏图片预览：非空显示遮罩（值为可渲染源）。 */
+  @State previewSrc: string = '';
   /** 助手生成中（显示"正在输入"指示）。 */
   @State typing: boolean = false;
   /**
@@ -204,6 +211,21 @@ export struct WorkspaceChatView {
   @State drafting: boolean = false;
   @State draftText: string = '';
   @State draftCwd: string = '';
+  /** 草稿绑定的工作区（分区「＋」进入时携带；服务端按 workspaceId 归组，与 cwd 互斥）。 */
+  @State draftWorkspaceId: string = '';
+  @State draftWorkspaceTitle: string = '';
+  @State draftWorkspacePath: string = '';
+  /** 草稿选定的 Agent 预设（web「模式」同构）；空串 = 服务器默认，创建后、首条消息前应用。 */
+  @State draftPresetId: string = '';
+  @State draftPresetName: string = '';
+  /** 草稿选定的模型（provider+model）；空串 = 服务器默认。 */
+  @State draftModelProvider: string = '';
+  @State draftModelId: string = '';
+  @State draftModelName: string = '';
+  /** 预设选择浮层与名单。 */
+  @State presetPickerOpen: boolean = false;
+  @State presetLoading: boolean = false;
+  @State presetItems: PresetItemVm[] = [];
   /** 工作目录选择浮层。 */
   @State wsPickerOpen: boolean = false;
   @State wsCustomOpen: boolean = false;
@@ -211,6 +233,8 @@ export struct WorkspaceChatView {
 
   private scroller: Scroller = new Scroller();
   private inFlight: boolean = false;
+  /** 会话视图代际：openSession/reloadHistory 自增，异步回写前比对拦截切走后的旧数据。 */
+  private viewGen: number = 0;
   /** 已向下翻过更早历史：暂停自动刷新避免清掉已加载页。 */
   private loadedOlder: boolean = false;
   private autoTimer: number = -1;
@@ -228,11 +252,20 @@ export struct WorkspaceChatView {
     AppStorage.setOrCreate('chatBackDepth', d);
   }
 
-  /** 系统返回：优先关浮层，再退草稿/会话列表。 */
+  /** 系统返回：优先关图片预览，再关浮层，再退草稿/会话列表。 */
   private onBackPop(): void {
+    if (this.previewSrc !== '') {
+      this.previewSrc = '';
+      return;
+    }
     if (this.wsPickerOpen) {
       this.wsPickerOpen = false;
       this.wsCustomOpen = false;
+      this.setBackDepth(this.drafting ? 1 : 0);
+      return;
+    }
+    if (this.presetPickerOpen) {
+      this.presetPickerOpen = false;
       this.setBackDepth(this.drafting ? 1 : 0);
       return;
     }
@@ -559,6 +592,14 @@ export struct WorkspaceChatView {
     this.drafting = true;
     this.draftText = '';
     this.draftCwd = '';
+    this.draftWorkspaceId = '';
+    this.draftWorkspaceTitle = '';
+    this.draftWorkspacePath = '';
+    this.draftPresetId = '';
+    this.draftPresetName = '';
+    this.draftModelProvider = '';
+    this.draftModelId = '';
+    this.draftModelName = '';
     this.expandedSeqs = [];
     this.detachStream();
     if (this.pollTimer >= 0) {
@@ -569,6 +610,14 @@ export struct WorkspaceChatView {
     this.setBackDepth(1);
   }
 
+  /** 从工程分区头部「＋」进入草稿：预绑定该工作区，创建时以 workspaceId 归组。 */
+  private enterDraftInWorkspace(sec: SessionSectionVm): void {
+    this.enterDraft();
+    this.draftWorkspaceId = sec.key;
+    this.draftWorkspaceTitle = sec.title;
+    this.draftWorkspacePath = sec.path;
+  }
+
   /** 草稿可发送条件。 */
   private canSendDraft(): boolean {
     return this.draftText.trim() !== '' && !this.creating;
@@ -576,14 +625,26 @@ export struct WorkspaceChatView {
 
   /** 当前工作目录展示文案。 */
   private draftCwdLabel(): string {
+    if (this.draftWorkspaceId !== '') {
+      return '工程 · ' + this.draftWorkspaceTitle;
+    }
     return this.draftCwd === '' ? '默认 · 服务器主目录' : this.draftCwd;
   }
 
-  /** 最近使用过的工作目录（去重取 6 个）。 */
+  /** 工作目录字符串归一（trim + 去尾斜杠），降低与服务器注册路径不一致的概率。 */
+  private normalizeCwd(cwd: string): string {
+    let t: string = cwd.trim();
+    while (t.length > 1 && t.charAt(t.length - 1) === '/') {
+      t = t.substring(0, t.length - 1);
+    }
+    return t;
+  }
+
+  /** 最近使用过的工作目录（归一去重取 6 个）。 */
   private recentCwds(): string[] {
     const out: string[] = [];
     for (let i: number = 0; i < this.sessions.length && out.length < 6; i++) {
-      const cwd: string = this.sessions[i].cwd;
+      const cwd: string = this.normalizeCwd(this.sessions[i].cwd);
       if (cwd !== '' && out.indexOf(cwd) < 0) {
         out.push(cwd);
       }
@@ -598,22 +659,49 @@ export struct WorkspaceChatView {
       return;
     }
     this.creating = true;
+    let created: SessionSummaryVm | null = null;
     try {
       const ctx: common.Context = getContext(this);
-      const s: SessionSummaryVm = await DshSessionsRepository.createSession(ctx, this.draftCwd);
+      created = await DshSessionsRepository.createSession(ctx,
+        this.draftWorkspaceId, this.draftCwd, this.draftWorkspacePath);
       this.drafting = false;
       this.draftText = '';
-      await this.openSession(s);
+      this.draftWorkspaceId = '';
+      this.draftWorkspaceTitle = '';
+      this.draftWorkspacePath = '';
+      await this.openSession(created);
       this.echoText = text;
+      this.echoImage = '';
       this.echoSending = false;
-      await DshSessionsRepository.sendText(ctx, s.sessionId, text, '', '', '');
+      // 草稿页选定的模式/模型：趁会话还空白（agent-preset/locked 之前）依次应用，再发首条消息
+      if (this.draftPresetId !== '') {
+        await DshSessionsRepository.presetSelect(ctx, created.sessionId, this.draftPresetId);
+      }
+      if (this.draftModelId !== '') {
+        await DshSessionsRepository.selectModel(ctx, created.sessionId,
+          this.draftModelProvider, this.draftModelId);
+      }
+      await DshSessionsRepository.sendText(ctx, created.sessionId, text, '', '', '');
       promptAction.showToast({ message: '已发送，正在等待 dsh 处理' });
-      // 发送后首条消息已落库（非 blank），列表此刻才拉得到新会话
-      this.refreshList(false);
+      // 发送后强刷（force 绕过 60s 工作区基线缓存），新会话立即出现在正确分区
+      this.refreshList(true);
       this.pollAfterSend();
     } catch (err) {
       const e: BusinessError = err as BusinessError;
-      promptAction.showToast({ message: '创建失败：' + e.message });
+      if (created === null) {
+        // 会话尚未创建：留在草稿页并保留输入，用户可直接重试
+        promptAction.showToast({ message: '创建失败：' + e.message });
+      } else {
+        // 会话已建、首条消息发送失败：清回显，文本退回输入框供重发
+        this.echoText = '';
+        this.echoImage = '';
+        this.echoSending = false;
+        if (this.selectedId === created.sessionId) {
+          this.inputText = text;
+        }
+        promptAction.showToast({ message: '发送失败：' + e.message });
+        this.refreshList(true);
+      }
     } finally {
       this.creating = false;
     }
@@ -703,6 +791,8 @@ export struct WorkspaceChatView {
   }
 
   private async openSession(s: SessionSummaryVm): Promise<void> {
+    // 先断旧会话流：await 加载期间旧事件不再回调污染新会话状态
+    this.detachStream();
     this.selectedId = s.sessionId;
     AppStorage.setOrCreate(KEY_CHAT_SELECTED_ID, s.sessionId);
     this.throughSeq = s.asOfSeq;
@@ -710,17 +800,25 @@ export struct WorkspaceChatView {
     this.drafting = false;
     this.syncAskCard();
     this.setBackDepth(1);
-    this.setBackDepth(1);
     this.expandedSeqs = [];
     this.loadedOlder = false;
     this.modelOverride = '';
     this.echoText = '';
+    this.echoImage = '';
+    // 待发附件属于原会话的上下文，不跟随到新会话
+    this.attachBase64 = '';
+    this.attachName = '';
+    this.attachMediaType = '';
     this.clearLive();
     if (this.pollTimer >= 0) {
       clearInterval(this.pollTimer);
       this.pollTimer = -1;
     }
     await this.reloadHistory();
+    // 加载期间用户又切走：不再挂流（新会话的 openSession 会自行挂载）
+    if (this.selectedId !== s.sessionId) {
+      return;
+    }
     this.attachStream();
     // 首页快捷任务复制后预填到输入框（只预填不发送）
     const prefill: string | undefined = AppStorage.get<string>('chatPrefill');
@@ -731,6 +829,8 @@ export struct WorkspaceChatView {
   }
 
   private async reloadHistory(): Promise<void> {
+    const gen: number = ++this.viewGen;
+    const sid: string = this.selectedId;
     this.chatState = ChatState.Loading;
     this.loadedOlder = false;
     this.clearLive();
@@ -738,16 +838,24 @@ export struct WorkspaceChatView {
     this.lastScrollY = 0;
     try {
       const ctx: common.Context = getContext(this);
-      const page: HistoryPageVm = await DshSessionsRepository.loadHistory(ctx, this.selectedId, this.throughSeq, -1);
+      const page: HistoryPageVm = await DshSessionsRepository.loadHistory(ctx, sid, this.throughSeq, -1);
+      // 加载期间已切换会话：丢弃旧结果，避免覆盖新会话视图
+      if (gen !== this.viewGen || this.selectedId !== sid) {
+        return;
+      }
       this.entries = page.entries;
       this.hasMore = page.hasMore;
       this.oldestSeq = page.oldestSeq;
       this.typing = page.generating;
       this.chatState = ChatState.Ready;
       this.echoText = '';
+      this.echoImage = '';
       this.chaseFailCount = 0;
       this.scrollToBottom();
     } catch (err) {
+      if (gen !== this.viewGen || this.selectedId !== sid) {
+        return;
+      }
       this.errorMsg = (err as BusinessError).message;
       this.chatState = ChatState.Failed;
     }
@@ -783,10 +891,16 @@ export struct WorkspaceChatView {
     if (this.chatState !== ChatState.Ready || this.selectedId === '') {
       return;
     }
+    const gen: number = this.viewGen;
+    const sid: string = this.selectedId;
     try {
       const ctx: common.Context = getContext(this);
       // throughSeq 传 -1：由仓库层自动反查最新游标，确保能拿到新消息
-      const page: HistoryPageVm = await DshSessionsRepository.loadHistory(ctx, this.selectedId, -1, -1);
+      const page: HistoryPageVm = await DshSessionsRepository.loadHistory(ctx, sid, -1, -1);
+      // 拉取期间已切换会话：丢弃，避免旧会话数据混入新会话
+      if (gen !== this.viewGen || this.selectedId !== sid) {
+        return;
+      }
       const pageMax: number = page.entries.length > 0 ? page.entries[page.entries.length - 1].seq : -1;
       const grew: boolean = pageMax > this.maxSeq();
       const genChanged: boolean = page.generating !== this.typing;
@@ -809,6 +923,7 @@ export struct WorkspaceChatView {
           this.oldestSeq = page.oldestSeq;
         }
         this.echoText = '';
+        this.echoImage = '';
         this.scrollToBottom();
         this.refreshList(false);
       }
@@ -921,15 +1036,16 @@ export struct WorkspaceChatView {
     }
   }
 
-  onStreamUserMessage(seq: number, time: number, text: string): void {
+  onStreamUserMessage(seq: number, time: number, text: string, images: string[]): void {
     if (seq <= this.maxSeq()) {
       return;
     }
     const e: ChatEntryVm = {
       kind: ChatEntryKind.User, seq: seq, time: time, turn: 0,
-      text: text, reasoning: '', usageIn: 0, usageOut: 0, model: '', tool: null,
+      text: text, reasoning: '', usageIn: 0, usageOut: 0, model: '', tool: null, images: images,
     };
     this.echoText = '';
+    this.echoImage = '';
     this.appendEntry(e);
     this.refreshList(false);
   }
@@ -960,10 +1076,10 @@ export struct WorkspaceChatView {
   }
 
   onStreamAssistantMessage(seq: number, time: number, turn: number, text: string,
-    reasoning: string, usageIn: number, usageOut: number, model: string): void {
+    reasoning: string, usageIn: number, usageOut: number, model: string, images: string[]): void {
     // 结算：终结流式卡；正文为空且思考为空 = 工具步骤空壳帧，跳过
     this.clearLive();
-    if (text === '' && reasoning === '') {
+    if (text === '' && reasoning === '' && images.length === 0) {
       return;
     }
     if (seq <= this.maxSeq()) {
@@ -972,9 +1088,10 @@ export struct WorkspaceChatView {
     const e: ChatEntryVm = {
       kind: ChatEntryKind.Assistant, seq: seq, time: time, turn: turn,
       text: text, reasoning: reasoning, usageIn: usageIn, usageOut: usageOut,
-      model: model, tool: null,
+      model: model, tool: null, images: images,
     };
     this.echoText = '';
+    this.echoImage = '';
     this.appendEntry(e);
     this.refreshList(false);
   }
@@ -990,7 +1107,7 @@ export struct WorkspaceChatView {
     };
     const e: ChatEntryVm = {
       kind: ChatEntryKind.Tool, seq: seq, time: time, turn: turn,
-      text: '', reasoning: '', usageIn: 0, usageOut: 0, model: '', tool: tool,
+      text: '', reasoning: '', usageIn: 0, usageOut: 0, model: '', tool: tool, images: [],
     };
     this.appendEntry(e);
   }
@@ -1010,7 +1127,7 @@ export struct WorkspaceChatView {
         const updated: ChatEntryVm = {
           kind: e.kind, seq: e.seq, time: e.time, turn: e.turn,
           text: e.text, reasoning: e.reasoning, usageIn: e.usageIn, usageOut: e.usageOut,
-          model: e.model, tool: tool,
+          model: e.model, tool: tool, images: e.images,
         };
         next.push(updated);
         changed = true;
@@ -1028,7 +1145,7 @@ export struct WorkspaceChatView {
     if (seq > this.maxSeq()) {
       const e: ChatEntryVm = {
         kind: ChatEntryKind.Turn, seq: seq, time: time, turn: turn,
-        text: '第 ' + turn + ' 轮', reasoning: '', usageIn: 0, usageOut: 0, model: '', tool: null,
+        text: '第 ' + turn + ' 轮', reasoning: '', usageIn: 0, usageOut: 0, model: '', tool: null, images: [],
       };
       this.appendEntry(e);
       this.typing = true;
@@ -1054,7 +1171,7 @@ export struct WorkspaceChatView {
     if (seq > this.maxSeq()) {
       const e: ChatEntryVm = {
         kind: ChatEntryKind.Error, seq: seq, time: time, turn: 0,
-        text: text, reasoning: '', usageIn: 0, usageOut: 0, model: '', tool: null,
+        text: text, reasoning: '', usageIn: 0, usageOut: 0, model: '', tool: null, images: [],
       };
       this.appendEntry(e);
     }
@@ -1096,9 +1213,15 @@ export struct WorkspaceChatView {
       return;
     }
     this.loadingOlder = true;
+    const gen: number = this.viewGen;
+    const sid: string = this.selectedId;
     try {
       const ctx: common.Context = getContext(this);
-      const page: HistoryPageVm = await DshSessionsRepository.loadHistory(ctx, this.selectedId, this.throughSeq, this.oldestSeq);
+      const page: HistoryPageVm = await DshSessionsRepository.loadHistory(ctx, sid, this.throughSeq, this.oldestSeq);
+      // 翻页期间已切换会话：丢弃旧结果
+      if (gen !== this.viewGen || this.selectedId !== sid) {
+        return;
+      }
       // 按 seq 去重合并（分页边界可能与已加载记录重叠）
       const merged: ChatEntryVm[] = page.entries.concat(this.entries);
       const seen: Set<number> = new Set<number>();
@@ -1157,16 +1280,18 @@ export struct WorkspaceChatView {
       }
       const uri: string = result.photoUris[0];
       const file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
-      const stat = fs.statSync(file.fd);
-      if (stat.size > 4 * 1024 * 1024) {
+      try {
+        const stat = fs.statSync(file.fd);
+        if (stat.size > 4 * 1024 * 1024) {
+          promptAction.showToast({ message: '图片请小于 4MB' });
+          return;
+        }
+        const buf: ArrayBuffer = new ArrayBuffer(stat.size);
+        fs.readSync(file.fd, buf);
+        this.attachBase64 = new util.Base64Helper().encodeToStringSync(new Uint8Array(buf));
+      } finally {
         fs.closeSync(file.fd);
-        promptAction.showToast({ message: '图片请小于 4MB' });
-        return;
       }
-      const buf: ArrayBuffer = new ArrayBuffer(stat.size);
-      fs.readSync(file.fd, buf);
-      fs.closeSync(file.fd);
-      this.attachBase64 = new util.Base64Helper().encodeToStringSync(new Uint8Array(buf));
       const lower: string = uri.toLowerCase();
       if (lower.endsWith('.png')) {
         this.attachMediaType = 'image/png';
@@ -1206,6 +1331,60 @@ export struct WorkspaceChatView {
     this.expandedSeqs = next;
   }
 
+  /** 复制文本到剪贴板（消息复制共用入口）。 */
+  private async copyText(text: string): Promise<void> {
+    if (text === '') {
+      return;
+    }
+    try {
+      const data: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
+      await pasteboard.getSystemPasteboard().setData(data);
+      promptAction.showToast({ message: '已复制' });
+    } catch (_e) {
+      promptAction.showToast({ message: '复制失败' });
+    }
+  }
+
+  /**
+   * 会话内链接路由：服务器站点（同源 URL / 站内绝对路径）→ 独立报告窗口
+   * （ReportViewerAbility，singleton 复用）；其余外链 → 系统浏览器。
+   */
+  private openReportLink(link: string): void {
+    if (link === '') {
+      return;
+    }
+    const ctx = getContext(this) as common.UIAbilityContext;
+    DshConfigStore.load(ctx)
+      .then((data) => {
+        const origin: string = data.serverUrl;
+        let url: string = link;
+        if (link.indexOf('http://') !== 0 && link.indexOf('https://') !== 0) {
+          url = origin + (link.charAt(0) === '/' ? link : '/' + link);
+        }
+        if (url === origin || url.indexOf(origin + '/') === 0) {
+          return this.launchReportWindow(ctx, url);
+        }
+        return ctx.openLink(url);
+      })
+      .catch((_e: Object) => {
+        promptAction.showToast({ message: '链接打开失败' });
+      });
+  }
+
+  /** 拉起独立报告窗口（singleton：已有窗口时 onNewWant 换页）。 */
+  private async launchReportWindow(ctx: common.UIAbilityContext, url: string): Promise<void> {
+    const want: Want = {
+      abilityName: 'ReportViewerAbility',
+      uri: url,
+    };
+    try {
+      await ctx.startAbility(want);
+    } catch (err) {
+      const e: BusinessError = err as BusinessError;
+      promptAction.showToast({ message: '打开报告窗口失败：' + e.message });
+    }
+  }
+
   /** 发送当前输入：本地立即回显，服务器确认后由轮询替换为真实消息。 */
   private async sendCurrent(): Promise<void> {
     const text: string = this.inputText.trim();
@@ -1216,12 +1395,20 @@ export struct WorkspaceChatView {
       return;
     }
     this.sending = true;
-    this.echoText = (this.attachBase64 !== '' ? '🖼 ' : '') + text;
+    this.echoText = text;
+    this.echoImage = this.attachBase64 !== ''
+      ? 'data:' + (this.attachMediaType === '' ? 'image/png' : this.attachMediaType) + ';base64,' + this.attachBase64
+      : '';
     this.echoSending = true;
+    const sid: string = this.selectedId;
     try {
       const ctx: common.Context = getContext(this);
-      await DshSessionsRepository.sendText(ctx, this.selectedId, text,
+      await DshSessionsRepository.sendText(ctx, sid, text,
         this.attachBase64, this.attachMediaType, this.attachName);
+      // 发送在途时用户已切走：不动新会话的输入框与回显
+      if (this.selectedId !== sid) {
+        return;
+      }
       this.inputText = '';
       this.attachBase64 = '';
       this.attachName = '';
@@ -1234,6 +1421,7 @@ export struct WorkspaceChatView {
     } catch (err) {
       const e: BusinessError = err as BusinessError;
       this.echoText = '';
+      this.echoImage = '';
       this.echoSending = false;
       const msg: string = e.message;
       if (msg.indexOf('not support') >= 0) {
@@ -1248,12 +1436,16 @@ export struct WorkspaceChatView {
 
   /* ───────────── Markdown 渲染 ───────────── */
 
-  /** 行内富文本：粗体加粗、行内码用等宽+强调色。 */
+  /** 行内富文本：粗体加粗、行内码用等宽+强调色、行内图片退化为 🖼 + 说明。 */
   @Builder
   runsText(runs: MdRun[], size: number, color: string) {
     Text() {
       ForEach(runs, (r: MdRun, i: number) => {
-        if (r.mono) {
+        if (r.img !== '') {
+          Span('🖼 ' + (r.text !== '' ? r.text : '图片'))
+            .fontSize(size - 2)
+            .fontColor(this.t().accent)
+        } else if (r.mono) {
           Span(r.text)
             .fontSize(size - 2)
             .fontFamily('monospace')
@@ -1261,6 +1453,9 @@ export struct WorkspaceChatView {
         } else if (r.link !== '') {
           Span(r.text)
             .fontColor(this.t().accent)
+            .onClick(() => {
+              this.openReportLink(r.link);
+            })
         } else if (r.bold) {
           Span(r.text)
             .fontWeight(FontWeight.Bold)
@@ -1288,6 +1483,14 @@ export struct WorkspaceChatView {
         .backgroundColor(this.t().termBg)
         .margin({ top: 8 })
         .width('100%')
+    } else if (b.kind === MdKind.Image) {
+      MdImageView({
+        src: b.src,
+        dark: this.dark,
+        onOpen: (display: string) => {
+          this.previewSrc = display;
+        },
+      })
     } else if (b.kind === MdKind.H1) {
       Column() {
         this.runsText(b.runs, 19, this.t().textPrimary)
@@ -1406,6 +1609,10 @@ export struct WorkspaceChatView {
   /* ───────────── 模型选择 ───────────── */
 
   private currentModelLabel(): string {
+    if (this.drafting) {
+      return this.draftModelId !== '' ? this.draftModelId
+        : (this.catalogDefaultModel !== '' ? this.catalogDefaultModel : '模型');
+    }
     if (this.modelOverride !== '') {
       return this.modelOverride;
     }
@@ -1441,6 +1648,16 @@ export struct WorkspaceChatView {
   }
 
   private async applyModel(g: ModelGroupVm, m: ModelItemVm): Promise<void> {
+    if (this.drafting) {
+      // 草稿页选模型：暂存选择，会话创建后、首条消息前经 session/selectModel 应用
+      this.draftModelProvider = g.id;
+      this.draftModelId = m.id;
+      this.draftModelName = m.name;
+      this.modelPickerOpen = false;
+      this.setBackDepth(1);
+      promptAction.showToast({ message: '新任务将使用 ' + m.name });
+      return;
+    }
     if (this.selectedId === '') {
       return;
     }
@@ -1455,6 +1672,52 @@ export struct WorkspaceChatView {
       const e: BusinessError = err as BusinessError;
       promptAction.showToast({ message: '切换失败：' + e.message });
     }
+  }
+
+  /** 草稿页「模式」展示文案。 */
+  private draftPresetLabel(): string {
+    return this.draftPresetName === '' ? '默认 · 服务器预设' : this.draftPresetName;
+  }
+
+  /** 草稿页「模型」展示文案。 */
+  private draftModelLabel(): string {
+    if (this.draftModelName !== '') {
+      return this.draftModelName;
+    }
+    return this.catalogDefaultModel === '' ? '默认 · 服务器模型' : '默认 · ' + this.catalogDefaultModel;
+  }
+
+  /** 打开预设选择浮层（惰性拉名单，成功后缓存）。 */
+  private async openPresetPicker(): Promise<void> {
+    this.presetPickerOpen = true;
+    this.setBackDepth(2);
+    if (this.presetItems.length > 0 || this.presetLoading) {
+      return;
+    }
+    this.presetLoading = true;
+    try {
+      const ctx: common.Context = getContext(this);
+      this.presetItems = await DshSessionsRepository.presetRoster(ctx);
+    } catch (err) {
+      promptAction.showToast({ message: '预设名单拉取失败' });
+      this.presetPickerOpen = false;
+      this.setBackDepth(1);
+    } finally {
+      this.presetLoading = false;
+    }
+  }
+
+  /** 选定预设：null 表示交给服务器默认。 */
+  private pickPreset(item: PresetItemVm | null): void {
+    if (item === null) {
+      this.draftPresetId = '';
+      this.draftPresetName = '';
+    } else {
+      this.draftPresetId = item.id;
+      this.draftPresetName = item.name;
+    }
+    this.presetPickerOpen = false;
+    this.setBackDepth(1);
   }
 
   /* ───────────── 显示辅助 ───────────── */
@@ -1667,6 +1930,12 @@ export struct WorkspaceChatView {
       await DshConfigStore.hideSession(ctx, s.sessionId);
       await this.loadHidden();
       if (this.selectedId === s.sessionId) {
+        // 隐藏的是当前会话：断流 + 停轮询，避免隐藏后事件继续驱动状态
+        this.detachStream();
+        if (this.pollTimer >= 0) {
+          clearInterval(this.pollTimer);
+          this.pollTimer = -1;
+        }
         this.selectedId = '';
         AppStorage.setOrCreate(KEY_CHAT_SELECTED_ID, '');
         this.syncAskCard();
@@ -1674,6 +1943,8 @@ export struct WorkspaceChatView {
         this.setBackDepth(0);
         this.chatState = ChatState.Idle;
         this.entries = [];
+        this.echoText = '';
+        this.echoImage = '';
       }
       promptAction.showToast({ message: '已在本机隐藏' });
     } catch (err) {
@@ -1864,15 +2135,43 @@ export struct WorkspaceChatView {
       if (this.wsPickerOpen) {
         this.wsPickerOverlay()
       }
+      if (this.presetPickerOpen) {
+        this.presetPickerOverlay()
+      }
       if (this.modelPickerOpen) {
         this.modelPickerOverlay()
       }
       if (this.renameOpen) {
         this.renameOverlay()
       }
+      if (this.previewSrc !== '') {
+        this.previewOverlay()
+      }
     }
     .width('100%')
     .height('100%')
+  }
+
+  /** 全屏图片预览遮罩：点任意处或系统返回关闭。 */
+  @Builder
+  previewOverlay() {
+    Column() {
+      Image(this.previewSrc)
+        .objectFit(ImageFit.Contain)
+        .constraintSize({ maxWidth: '100%', maxHeight: '86%' })
+        .borderRadius(8)
+      Text('点击任意处关闭')
+        .fontSize(12)
+        .fontColor(this.t().textSecondary)
+        .margin({ top: 14 })
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor('rgba(0,0,0,0.92)')
+    .onClick(() => {
+      this.previewSrc = '';
+    })
   }
 
   @Builder
@@ -1931,37 +2230,95 @@ export struct WorkspaceChatView {
       }
 
       Scroll() {
-        Column({ space: 18 }) {
-          Column({ space: 4 }) {
-            Text('✦')
-              .fontSize(26)
-              .fontColor(this.t().onAccent)
-              .width(56)
-              .height(56)
-              .textAlign(TextAlign.Center)
-              .borderRadius(18)
-              .linearGradient({
-                angle: 135,
-                colors: [[this.t().accent, 0.0], [this.t().accent2, 1.0]],
-              })
-            Text('新任务')
-              .fontSize(26)
-              .fontWeight(FontWeight.Bold)
-              .fontColor(this.t().textPrimary)
-              .margin({ top: 14 })
-            Text('描述要做的事，发送时自动创建会话')
-              .fontSize(13)
-              .fontColor(this.t().textSecondary)
-              .margin({ top: 6 })
+        Column({ space: 12 }) {
+          Row({ space: 12 }) {
+            Column() {
+              Text('✦')
+                .fontSize(20)
+                .fontColor(this.t().onAccent)
+                .width(44)
+                .height(44)
+                .textAlign(TextAlign.Center)
+                .borderRadius(14)
+                .linearGradient({
+                  angle: 135,
+                  colors: [[this.t().accent, 0.0], [this.t().accent2, 1.0]],
+                })
+            }
+            Column({ space: 2 }) {
+              Text('新任务')
+                .fontSize(20)
+                .fontWeight(FontWeight.Bold)
+                .fontColor(this.t().textPrimary)
+              Text('描述要做的事，发送时自动创建会话')
+                .fontSize(12)
+                .fontColor(this.t().textSecondary)
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
           }
           .width('100%')
-          .alignItems(HorizontalAlign.Start)
-          .margin({ top: 10 })
+          .margin({ top: 6 })
+
+          // 模式/模型：输入框上方直达，进页即见免滚动
+          Row({ space: 10 }) {
+            Row({ space: 8 }) {
+              Text('✦')
+                .fontSize(14)
+                .fontColor(this.t().accent2)
+              Column({ space: 2 }) {
+                Text('模式')
+                  .fontSize(10)
+                  .fontColor(this.t().textTertiary)
+                Text(this.draftPresetLabel())
+                  .fontSize(12.5)
+                  .fontColor(this.t().textPrimary)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+            }
+            .layoutWeight(1)
+            .padding({ left: 12, right: 12, top: 9, bottom: 9 })
+            .borderRadius(12)
+            .backgroundColor(this.t().bgCard)
+            .border({ width: 1, color: this.t().border })
+            .onClick(() => {
+              this.openPresetPicker();
+            })
+
+            Row({ space: 8 }) {
+              Text('🧠')
+                .fontSize(13)
+              Column({ space: 2 }) {
+                Text('模型')
+                  .fontSize(10)
+                  .fontColor(this.t().textTertiary)
+                Text(this.draftModelLabel())
+                  .fontSize(12.5)
+                  .fontColor(this.t().textPrimary)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+            }
+            .layoutWeight(1)
+            .padding({ left: 12, right: 12, top: 9, bottom: 9 })
+            .borderRadius(12)
+            .backgroundColor(this.t().bgCard)
+            .border({ width: 1, color: this.t().border })
+            .onClick(() => {
+              this.openModelPicker();
+            })
+          }
+          .width('100%')
 
           Column() {
             TextArea({ text: this.draftText, placeholder: '例如：帮我抓取今天的 AI 领域舆情，整理成摘要…' })
               .width('100%')
-              .height(156)
+              .height(140)
               .fontSize(15)
               .fontColor(this.t().textPrimary)
               .placeholderColor(this.t().textTertiary)
@@ -2067,15 +2424,25 @@ export struct WorkspaceChatView {
         .width('100%')
         .margin({ bottom: 4 })
 
-      this.wsRow('默认 · 服务器主目录', this.draftCwd === '', () => {
+      this.wsRow('默认 · 服务器主目录', this.draftCwd === '' && this.draftWorkspaceId === '', () => {
         this.draftCwd = '';
+        this.draftWorkspaceId = '';
+        this.draftWorkspaceTitle = '';
+        this.draftWorkspacePath = '';
         this.wsPickerOpen = false;
+        this.wsCustomOpen = false;
+        this.wsCustomText = '';
         this.setBackDepth(1);
       })
       ForEach(this.recentCwds(), (cwd: string) => {
-        this.wsRow(cwd, this.draftCwd === cwd, () => {
+        this.wsRow(cwd, this.draftCwd === cwd && this.draftWorkspaceId === '', () => {
           this.draftCwd = cwd;
+          this.draftWorkspaceId = '';
+          this.draftWorkspaceTitle = '';
+          this.draftWorkspacePath = '';
           this.wsPickerOpen = false;
+          this.wsCustomOpen = false;
+          this.wsCustomText = '';
           this.setBackDepth(1);
         })
       }, (cwd: string) => cwd)
@@ -2104,9 +2471,12 @@ export struct WorkspaceChatView {
             .backgroundColor(this.t().accent)
             .borderRadius(10)
             .onClick(() => {
-              const p: string = this.wsCustomText.trim();
+              const p: string = this.normalizeCwd(this.wsCustomText);
               if (p !== '') {
                 this.draftCwd = p;
+                this.draftWorkspaceId = '';
+                this.draftWorkspaceTitle = '';
+                this.draftWorkspacePath = '';
                 this.wsPickerOpen = false;
                 this.wsCustomOpen = false;
                 this.setBackDepth(1);
@@ -2234,6 +2604,138 @@ export struct WorkspaceChatView {
               }
               .width('100%')
             }, (g: ModelGroupVm) => g.id)
+          }
+          .width('100%')
+        }
+        .layoutWeight(1)
+        .scrollBar(BarState.Off)
+        .align(Alignment.Top)
+        .edgeEffect(EdgeEffect.Spring)
+      }
+    }
+    .width('86%')
+    .constraintSize({ maxWidth: 560, maxHeight: '72%' })
+    .padding(18)
+    .borderRadius(20)
+    .backgroundColor(this.t().bgCard)
+    .border({ width: 1, color: this.t().border })
+  }
+
+  /** 预设（模式）选择浮层：默认行 + 名单（broken 行已在仓库层过滤）。 */
+  @Builder
+  presetPickerOverlay() {
+    Column()
+      .width('100%')
+      .height('100%')
+      .backgroundColor('rgba(0,0,0,0.55)')
+      .onClick(() => {
+        this.presetPickerOpen = false;
+        this.setBackDepth(1);
+      })
+
+    Column() {
+      Row() {
+        Text('选择模式')
+          .fontSize(16)
+          .fontWeight(FontWeight.Bold)
+          .fontColor(this.t().textPrimary)
+          .layoutWeight(1)
+        Column() {
+          Text('✕')
+            .fontSize(16)
+            .fontColor(this.t().textSecondary)
+        }
+        .width(40)
+        .height(40)
+        .justifyContent(FlexAlign.Center)
+        .onClick(() => {
+          this.presetPickerOpen = false;
+          this.setBackDepth(1);
+        })
+      }
+      .width('100%')
+      .margin({ bottom: 8 })
+
+      if (this.presetLoading) {
+        Column() {
+          LoadingProgress()
+            .width(32)
+            .height(32)
+            .color(this.t().accent)
+        }
+        .width('100%')
+        .padding({ top: 30, bottom: 30 })
+        .justifyContent(FlexAlign.Center)
+      } else {
+        Scroll() {
+          Column() {
+            Column() {
+              Row() {
+                Text(this.draftPresetId === '' ? '● ' : '○ ')
+                  .fontSize(13)
+                  .fontColor(this.draftPresetId === '' ? this.t().accent : this.t().textTertiary)
+                Text('跟随服务器默认')
+                  .fontSize(15)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(this.t().textPrimary)
+                  .layoutWeight(1)
+              }
+              .width('100%')
+              Text('不在新任务里指定模式')
+                .fontSize(11.5)
+                .fontColor(this.t().textSecondary)
+                .lineHeight(16)
+                .margin({ top: 4 })
+            }
+            .width('100%')
+            .alignItems(HorizontalAlign.Start)
+            .padding(14)
+            .borderRadius(12)
+            .backgroundColor(this.draftPresetId === '' ? this.t().navActiveBg : Color.Transparent)
+            .margin({ bottom: 4 })
+            .onClick(() => {
+              this.pickPreset(null);
+            })
+
+            ForEach(this.presetItems, (p: PresetItemVm) => {
+              Column() {
+                Row({ space: 8 }) {
+                  Text(this.draftPresetId === p.id ? '● ' : '○ ')
+                    .fontSize(13)
+                    .fontColor(this.draftPresetId === p.id ? this.t().accent : this.t().textTertiary)
+                  Text(p.name)
+                    .fontSize(15)
+                    .fontWeight(FontWeight.Medium)
+                    .fontColor(this.t().textPrimary)
+                    .layoutWeight(1)
+                  if (p.isDefault) {
+                    Text('默认')
+                      .fontSize(10)
+                      .fontColor(this.t().accent)
+                      .padding({ left: 8, right: 8, top: 2, bottom: 2 })
+                      .borderRadius(8)
+                      .backgroundColor(this.t().navActiveBg)
+                  }
+                }
+                .width('100%')
+                if (p.description !== '') {
+                  Text(p.description)
+                    .fontSize(11.5)
+                    .fontColor(this.t().textSecondary)
+                    .lineHeight(16)
+                    .margin({ top: 4 })
+                }
+              }
+              .width('100%')
+              .alignItems(HorizontalAlign.Start)
+              .padding(14)
+              .borderRadius(12)
+              .backgroundColor(this.draftPresetId === p.id ? this.t().navActiveBg : Color.Transparent)
+              .margin({ bottom: 4 })
+              .onClick(() => {
+                this.pickPreset(p);
+              })
+            }, (p: PresetItemVm) => p.id)
           }
           .width('100%')
         }
@@ -2567,6 +3069,22 @@ export struct WorkspaceChatView {
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
+      if (!sec.ungrouped) {
+        // 工程分区快捷新建：以此工作区创建会话（服务端按 workspaceId 归组，杜绝落进未分组）
+        Column() {
+          SymbolGlyph($r('sys.symbol.plus'))
+            .fontSize(14)
+            .fontColor([this.t().accent])
+        }
+        .width(26)
+        .height(26)
+        .justifyContent(FlexAlign.Center)
+        .borderRadius(8)
+        .margin({ right: 4 })
+        .onClick(() => {
+          this.enterDraftInWorkspace(sec);
+        })
+      }
       Text('' + sec.sessions.length)
         .fontSize(10)
         .fontColor(this.t().textTertiary)
@@ -2866,12 +3384,21 @@ export struct WorkspaceChatView {
                 .margin({ top: 10 })
                 .alignSelf(ItemAlign.Start)
               }
-              if (this.echoText !== '') {
+              if (this.echoText !== '' || this.echoImage !== '') {
                 Column() {
-                  Text(this.echoText)
-                    .fontSize(15)
-                    .fontColor(this.t().textPrimary)
-                    .lineHeight(22)
+                  if (this.echoText !== '') {
+                    Text(this.echoText)
+                      .fontSize(15)
+                      .fontColor(this.t().textPrimary)
+                      .lineHeight(22)
+                  }
+                  if (this.echoImage !== '') {
+                    Image(this.echoImage)
+                      .objectFit(ImageFit.Contain)
+                      .constraintSize({ maxWidth: '100%', maxHeight: 220 })
+                      .borderRadius(10)
+                      .margin({ top: this.echoText !== '' ? 8 : 0 })
+                  }
                   if (this.echoSending) {
                     Text('发送中…')
                       .fontSize(10)
@@ -3094,10 +3621,22 @@ export struct WorkspaceChatView {
   @Builder
   userBubble(e: ChatEntryVm) {
     Column() {
-      Text(e.text)
-        .fontSize(15)
-        .fontColor(this.t().textPrimary)
-        .lineHeight(22)
+      if (e.text !== '') {
+        Text(e.text)
+          .fontSize(15)
+          .fontColor(this.t().textPrimary)
+          .lineHeight(22)
+      }
+      ForEach(e.images, (id: string) => {
+        AttachmentImageView({
+          sessionId: this.selectedId,
+          attachmentId: id,
+          dark: this.dark,
+          onOpen: (display: string) => {
+            this.previewSrc = display;
+          },
+        })
+      }, (id: string, i: number) => i + '-' + id)
     }
     .constraintSize({ maxWidth: this.coverMode ? '86%' : '70%' })
     .padding({ left: 20, right: 20, top: 14, bottom: 14 })
@@ -3106,6 +3645,10 @@ export struct WorkspaceChatView {
     .border({ width: 1, color: this.dark ? 'rgba(34,211,238,0.32)' : '#C9DDF9' })
     .margin({ top: 10 })
     .alignSelf(ItemAlign.End)
+    .gesture(LongPressGesture({ repeat: false })
+      .onAction(() => {
+        this.copyText(e.text);
+      }))
   }
 
   /** 轮次失败卡（turn/end reason≠completed）：错误详情在此，否则失败轮次在手机端不可见。 */
@@ -3130,6 +3673,10 @@ export struct WorkspaceChatView {
     .border({ width: 1, color: this.dark ? 'rgba(248,113,113,0.35)' : 'rgba(220,38,38,0.25)' })
     .margin({ top: 8 })
     .alignSelf(ItemAlign.Start)
+    .gesture(LongPressGesture({ repeat: false })
+      .onAction(() => {
+        this.copyText(e.text);
+      }))
   }
 
   /**
@@ -3332,7 +3879,7 @@ export struct WorkspaceChatView {
           Column() {
             ForEach(parseMarkdown(e.text), (b: MdBlock, idx: number) => {
               this.mdBlockView(b)
-            }, (b: MdBlock, idx: number) => idx + '-' + b.kind + '-' + b.code.length)
+            }, (b: MdBlock, idx: number) => this.mdKey(b, idx))
             if (live) {
               Text('▌')
                 .fontSize(15)
@@ -3355,6 +3902,17 @@ export struct WorkspaceChatView {
         }
       }
 
+      ForEach(e.images, (id: string) => {
+        AttachmentImageView({
+          sessionId: this.selectedId,
+          attachmentId: id,
+          dark: this.dark,
+          onOpen: (display: string) => {
+            this.previewSrc = display;
+          },
+        })
+      }, (id: string, i: number) => i + '-' + id)
+
       if (!live) {
         Row() {
           if (e.usageIn > 0) {
@@ -3372,6 +3930,16 @@ export struct WorkspaceChatView {
           Text(this.fmtClock(e.time))
             .fontSize(10)
             .fontColor(this.t().textTertiary)
+          Blank()
+          Text('复制')
+            .fontSize(11)
+            .fontColor(this.t().accent)
+            .padding({ left: 10, right: 10, top: 3, bottom: 3 })
+            .borderRadius(8)
+            .backgroundColor(this.t().navActiveBg)
+            .onClick(() => {
+              this.copyText(e.text);
+            })
         }
         .width('100%')
         .margin({ top: 8 })

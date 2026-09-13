@@ -26,7 +26,7 @@
 - **发送任务**：乐观回显（秒显）→ 实时事件驱动回复；支持 **图片附件**（base64 直嵌）
 - **dsh 提问/审批弹卡**：dsh 执行中向你提问或请求工具授权时（`$events` 事件流），对话页输入区上方弹出卡片——选项单选/多选、自定义文本、跳过、计划审批（确认执行/拒绝）、工具审批（允许一次/拒绝）；不在该会话时首页/其他页顶部横幅提示，点击直达；也可「去网页处理」让位给 web 控制台（多端竞速，先答者胜）
 - **模型切换**：顶栏胶囊一键拉取服务器模型目录并切换
-- **新建任务**：草稿式页面（不输入不创建会话），支持选择工作目录（默认/最近使用/自定义）
+- **新建任务**：草稿式页面（不输入不创建会话）；**模式**（Agent 预设）与**模型**做成输入框上方的选择片，进页即见免滚动；工作目录（默认/最近使用/自定义）；创建后、首条消息前依次应用
 - **折叠适配**：展开态双栏（左栏可收起最大化对话）+ 合盖态单栏两级导航，侧滑返回逐层回退
 
 ### 🏠 连接中心（首页）
@@ -34,6 +34,13 @@
 - 「＋ 新建任务」一键直达
 - 近期会话真实数据卡片
 - 登录态到期预警
+
+### 📊 策略报告（HTML 报告浏览器）
+- 底部栏/侧栏第 5 入口「▦ 策略报告」：浏览器式 WebView，**每次点进 Tab 都回到 `{server}/reports/` 首页**（nginx 目录页）
+- 工具条：后退/前进/地址胶囊（点按复制）/刷新/☆ 收藏/⋮ 菜单、顶部细进度线、主资源加载失败重试卡
+- **精品收藏**：☆ 一键收藏当前报告（页面 title 为名，本地持久化），⋮ 菜单「我的收藏」底部抽屉管理——**每行名称加粗、链接退为辅助小字，✏️ 可重命名**，点开直达 / 🗑 删除；Tab 与独立窗口共用
+- 会话内链接可点：服务器同源链接（含裸 URL 自动识别）→ **独立报告窗口**（singleton UIAbility，多链接复用换页）；外部链接 → 系统浏览器；报告页内外链在浏览器视图内直接可看（返回键回到报告）
+- 认证无感：nginx Basic Auth 自动应答 + 原生 dsh Cookie 同步进 WebView 罐（`/reports/` 免认证亦可直开）
 
 ### 🎨 体验细节
 - **双主题**：深空指挥舱（深）/ 极简商务白（浅），可跟随系统
@@ -96,23 +103,29 @@ sudo journalctl -u dsh-web.service --no-pager | grep -oh 'https\?://[^ ]*token=[
 
 ```
 entry/src/main/ets/
-├── pages/Index.ets          外壳：4 Tab、折叠断点、返回深度协调、dsh 待回答横幅
+├── pages/Index.ets          外壳：5 Tab、折叠断点、返回深度协调、dsh 待回答横幅
+├── pages/ReportWindowPage.ets  独立报告窗口页（ReportViewerAbility 承载）
 ├── views/
 │   ├── WorkspaceChatView    会话列表 + 对话（主力，最大文件，含提问/审批卡片）
 │   ├── HomeView             连接中心首页
 │   ├── OnboardingView       三步引导
 │   ├── SettingsView         设置
+│   ├── ReportView           策略报告 Tab（/reports/ 浏览器）
+│   ├── ReportBrowser        浏览器组件（工具条+WebView，Tab 与独立窗口共用）
 │   └── WorkspaceView        WebView 完整版控制台（备用）
+├── reportability/
+│   └── ReportViewerAbility  独立报告窗口（singleton，会话链接拉起，onNewWant 换页）
 ├── service/
 │   ├── DshApiClient         RPC 客户端（信封/Cookie 四源/401 自愈）
 │   ├── DshStreamClient      WS 逐字流（session/follow）
 │   ├── DshEventClient       dsh 主动交互流（$events：提问/审批 waterfall + 回执）
-│   ├── DshSessionsRepository  wire→视图模型（三层 null 防御）
+│   ├── DshSessionsRepository  解析
+│   ├── DshImageCache        取图落盘缓存
 │   ├── DshConfigStore       偏好持久化 + 本机隐藏
 │   ├── SecureStore          系统资产库加密存储
 │   └── HealthMonitor        健康探针
 ├── model/                   DshTypes（全局键/常量）· SessionVms（视图模型）
-├── parse/MdParser.ets       轻量 Markdown 解析
+├── parse/MdParser.ets       轻量 Markdown 解析（含裸 URL 链接化）
 └── theme/Theme.ets          双主题令牌
 design/                      视觉稿源文件 + ARCHITECTURE.md + 图标预览
 ```
@@ -135,8 +148,11 @@ design/                      视觉稿源文件 + ARCHITECTURE.md + 图标预览
 
 - [x] ~~WebSocket 逐字流（打字机效果，替代轮询）~~ ✅ 已实现（ADR-8 升级，见 ARCHITECTURE.md §3.5）
 - [x] ~~图片附件~~ · ~~模型切换~~ · ~~停止生成~~ · ~~重命名~~ · ~~草稿式新建+工作目录~~ · ~~Cookie 持久化~~ · ~~到期提醒~~ · ~~Markdown 表格/链接~~
+- [x] ~~图片在历史消息中的内联渲染~~（Markdown 图片 + 消息附件图 + 点按全屏，见 ARCHITECTURE.md §3.2 取图端点）
+- [x] ~~历史消息复制~~（助手卡「复制」按钮 / 用户气泡与错误卡长按）
+- [x] ~~策略报告浏览器~~（Tab 直开 /reports/ + 会话链接独立窗口，见 ARCHITECTURE.md ADR-13）
+- [ ] 报告目录页美化（现为 nginx autoindex 直显，不佳则换原生目录导航）
 - [ ] 会话搜索 / fork（协议已确认）
-- [ ] 图片在历史消息中的内联渲染
 - [ ] 自动令牌端点部署（脚本已备，按需启用）
 
 ---

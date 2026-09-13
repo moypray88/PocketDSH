@@ -53,6 +53,8 @@ export const KEY_CHAT_CREATE_TICK: string = 'chatCreateTick'
 /** Index 当前选中的 Tab（0=会话，与 Index.TabId 对齐）；工作台据此感知页面显隐。 */
 export const KEY_CUR_TAB: string = 'curTab'
 export const TAB_SESSIONS: number = 0
+/** 与 Index.TabId.Reports 对齐：策略报告 Tab 每次点进都回到 /reports/ 首页。 */
+export const TAB_REPORTS: number = 4
 
 /** 跨页信号：本机隐藏集被设置页改动（全部恢复），工作台需重载 hiddenIds。 */
 export const KEY_HIDDEN_TICK: string = 'hiddenTick'
@@ -64,3 +66,12 @@ export const KEY_CHAT_SELECTED_ID: string = 'chatSelectedId'
 /** 跨页跳转会话请求（全局横幅点击下发）：askJumpId 携带目标会话。 */
 export const KEY_ASK_JUMP_ID: string = 'askJumpId'
 export const KEY_ASK_JUMP_TICK: string = 'askJumpTick'
+
+/** 策略报告 Tab 返回协调：webview 有历史=1，Index.onBackPress 据此下发后退信号。 */
+export const KEY_REPORT_BACK_DEPTH: string = 'reportBackDepth'
+export const KEY_REPORT_BACK_TICK: string = 'reportBackTick'
+/** 独立报告窗口页自身的返回后退信号（与 Tab 分键，两实例并存互不牵连）。 */
+export const KEY_REPORT_WINDOW_BACK_TICK: string = 'reportWindowBackTick'
+/** 独立报告窗口（ReportViewerAbility）：uri 下发与换页信号（singleton 复用窗口）。 */
+export const KEY_REPORT_WINDOW_URL: string = 'reportWindowUrl'
+export const KEY_REPORT_WINDOW_TICK: string = 'reportWindowTick'

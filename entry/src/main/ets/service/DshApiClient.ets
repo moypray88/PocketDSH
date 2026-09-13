@@ -335,6 +335,22 @@ export class DshApiClient {
   }
 
   /**
+   * 供 WebView 场景（报告浏览器等）同步 dsh 会话 Cookie：确保原生 Cookie 就绪后
+   * 返回 name=value；任何失败返回空串（调用方跳过同步，Basic Auth 仍可兜底）。
+   */
+  static async ensureWebCookie(ctx: common.Context): Promise<string> {
+    try {
+      const data = await DshConfigStore.load(ctx);
+      const password: string = await DshConfigStore.getPassword();
+      const tokenUrl: string = await DshConfigStore.getTokenUrl();
+      await DshApiClient.ensureCookie(ctx, data.serverUrl, data.username, password, tokenUrl);
+      return DshApiClient.cookieNameValue;
+    } catch (err) {
+      return '';
+    }
+  }
+
+  /**
    * 调用 POST /api/<method>。401 自动清 Cookie 重换一次再重试；
    * result.ok=false 抛 DshApiClientError（code 为网关错误码）。
    * @param ctx 上下文（读取配置）

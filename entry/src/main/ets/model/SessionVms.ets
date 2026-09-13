@@ -70,6 +70,8 @@ export interface ChatEntryVm {
   usageOut: number;
   /** 模型名。 */
   model: string;
+  /** 消息内图片（image 内容块的 attachmentId，按出现顺序）；空数组表示无图。 */
+  images: string[];
   /** 工具调用详情；仅 kind=Tool 时非空。 */
   tool: ToolCallVm | null;
 }
@@ -105,6 +107,16 @@ export interface CatalogVm {
   /** 部署默认模型 ID。 */
   defaultModel: string;
   groups: ModelGroupVm[];
+}
+
+/** Agent 预设项（agentPresets/list 行；web 端「模式」选择同构）。 */
+export interface PresetItemVm {
+  id: string;
+  /** 显示名（如「标准模式」，缺失退化为 id）。 */
+  name: string;
+  description: string;
+  /** 是否服务器默认预设。 */
+  isDefault: boolean;
 }
 
 /** 工作区（dsh web「工作区」同构：一个工程目录 = 一组会话，顺序即服务器展示序）。 */

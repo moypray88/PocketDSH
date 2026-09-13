@@ -5,13 +5,13 @@
         "name": "default",
         "type": "HarmonyOS",
         "material": {
-          "certpath": "C:\\Users\\moypr\\.ohos\\config\\default_PocketDSH_GiRTdQPCWFK5hee4i8Sp-tEGwqBYN-tNuXqovg1CYCc=.cer",
-          "keyAlias": "debugKey",
-          "keyPassword": "0000001B964FC64677AB7D648AB315A2FC51ADB2CC019A38FEB0D8818089A5F89826FF705012C819250FF9",
-          "profile": "C:\\Users\\moypr\\.ohos\\config\\default_PocketDSH_GiRTdQPCWFK5hee4i8Sp-tEGwqBYN-tNuXqovg1CYCc=.p7b",
+          "storeFile": "D:/workspace/手机证书/PocketDSH.p12",
+          "storePassword": "0000001BD79A6876CEE3C610E966E2DC97862C3D3F4D965E6B1BC1FE812265E3A24DC4587CC2F07F1D156E",
+          "keyAlias": "PocketDSH",
+          "keyPassword": "0000001BA9EC4C8E5294B0E4866FFE996611327D080AA140C52D0AD450B3612290BAAB12094B55DA4C6102",
           "signAlg": "SHA256withECDSA",
-          "storeFile": "C:\\Users\\moypr\\.ohos\\config\\default_PocketDSH_GiRTdQPCWFK5hee4i8Sp-tEGwqBYN-tNuXqovg1CYCc=.p12",
-          "storePassword": "0000001B4D0442BEF76D24D38C583192878BD24199AF0DA61C765467CB80E0577891EBA2C2B6F92A39F8AD"
+          "profile": "D:/workspace/手机证书/PocketDSHDebug.p7b",
+          "certpath": "D:/workspace/手机证书/PocketDSH.cer"
         }
       }
     ],

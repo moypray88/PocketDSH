@@ -15,7 +15,7 @@
         "name": "ohos.permission.INTERNET",
         "reason": "$string:internet_reason",
         "usedScene": {
-          "abilities": ["EntryAbility"],
+          "abilities": ["EntryAbility", "ReportViewerAbility"],
           "when": "always"
         }
       }
@@ -40,6 +40,17 @@
             ]
           }
         ]
+      },
+      {
+        "name": "ReportViewerAbility",
+        "srcEntry": "./ets/reportability/ReportViewerAbility.ets",
+        "description": "$string:ReportViewerAbility_desc",
+        "icon": "$media:layered_image",
+        "label": "$string:ReportViewerAbility_label",
+        "startWindowIcon": "$media:startIcon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": false,
+        "launchType": "singleton"
       }
     ],
     "extensionAbilities": [

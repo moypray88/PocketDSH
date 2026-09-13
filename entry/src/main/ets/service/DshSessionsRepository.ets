@@ -3,7 +3,7 @@ import common from '@ohos.app.ability.common';
 import { BusinessError } from '@ohos.base';
 import { DshApiClient, DshApiClientError } from './DshApiClient';
 import { DshStreamClient } from './DshStreamClient';
-import { CatalogVm, ChatEntryKind, ChatEntryVm, HistoryPageVm, ModelGroupVm, ModelItemVm, SessionSummaryVm, ToolCallVm, WorkspaceBaselineVm, WorkspaceVm } from '../model/SessionVms';
+import { CatalogVm, ChatEntryKind, ChatEntryVm, HistoryPageVm, ModelGroupVm, ModelItemVm, PresetItemVm, SessionSummaryVm, ToolCallVm, WorkspaceBaselineVm, WorkspaceVm } from '../model/SessionVms';
 
 /* ───────────── wire 形状（宽松解析；字段可缺省也可为显式 null） ───────────── */
 
@@ -118,10 +118,22 @@ interface WireEvent {
   data?: object;
 }
 
-/** 内容块（text / reasoning）。 */
+/** 内容块（text / reasoning / image）。 */
 interface WireContentBlock {
   type?: string;
   text?: string;
+  /** image 块携带的附件引用（attachmentId 取图凭据）。 */
+  attachment?: WireImageAttachment;
+}
+
+/** 图片附件引用（源码 ImageAttachmentRef，attachmentId 永远不是文件路径）。 */
+interface WireImageAttachment {
+  attachmentId?: string;
+  mediaType?: string;
+  bytes?: number;
+  width?: number;
+  height?: number;
+  name?: string;
 }
 
 /** user/message 的来源标识。 */
@@ -218,8 +230,9 @@ interface WireAbortCauseData {
   kind?: string;
 }
 
-/** session/create 的请求（源码类型 SessionCreateRequest：支持工作目录）。 */
+/** session/create 的请求（源码类型 SessionCreateRequest：workspaceId 与 cwd 互斥，前者才会归组到工作区）。 */
 interface WireCreateRequest {
+  workspaceId?: string;
   cwd?: string;
 }
 
@@ -283,6 +296,56 @@ interface WireCatalogModel {
   id?: string;
   name?: string;
   description?: string;
+}
+
+/** agentPresets/list 的返回行（源码类型 AgentPresetRow；broken 行不可选）。 */
+interface WirePresetRow {
+  id?: string;
+  name?: string;
+  description?: string;
+  isDefault?: boolean;
+  broken?: string;
+}
+
+/** agentPresets/list 的返回（源码类型 AgentPresetRoster）。 */
+interface WirePresetRoster {
+  presets?: WirePresetRow[];
+}
+
+/** agentPresets/select 的请求（named wire args 直传，参数名即键）。 */
+interface WirePresetSelectRequest {
+  agent: string;
+  agentPreset: string;
+}
+
+/** session/readImage 的返回（按工作区白名单路径取图）。 */
+interface WireReadImageValue {
+  mediaType?: string;
+  bytes?: number;
+  data?: string;
+}
+
+/** session/attachment 的返回（按附件引用取图）。 */
+interface WireAttachmentValue {
+  attachment?: WireImageAttachment;
+  data?: string;
+}
+
+/** 取图结果：mediaType + base64（不含 data: 前缀）。 */
+export interface ImageDataVm {
+  mediaType: string;
+  base64: string;
+}
+
+/** session/readImage 的请求。 */
+interface WireReadImageRequest {
+  path: string;
+}
+
+/** session/attachment 的请求（源码类型 SessionAttachmentRequest）。 */
+interface WireAttachmentRequest {
+  sessionId: string;
+  attachmentId: string;
 }
 
 /** 工具结果文本截断上限。 */
@@ -487,7 +550,7 @@ export class DshSessionsRepository {
           continue;
         }
         entries.push(DshSessionsRepository.entry(ChatEntryKind.User, seq, time, 0,
-          joined, '', 0, 0, '', null));
+          joined, '', 0, 0, '', null, DshSessionsRepository.collectImageIds(d.content)));
       } else if (type === 'assistant/message') {
         const d: WireAssistantEventData = data as WireAssistantEventData;
         const msg: WireAssistantMessage = d.message !== undefined && d.message !== null
@@ -511,7 +574,7 @@ export class DshSessionsRepository {
           DshSessionsRepository.cleanNum(usage.inputTokens),
           DshSessionsRepository.cleanNum(usage.outputTokens),
           source === null ? '' : DshSessionsRepository.cleanStr(source.model),
-          null));
+          null, DshSessionsRepository.collectImageIds(msg.content)));
       } else if (type === 'tool/call') {
         const d: WireToolCallData = data as WireToolCallData;
         const callId: string = DshSessionsRepository.cleanStr(d.callId);
@@ -522,7 +585,7 @@ export class DshSessionsRepository {
           resultText: '',
           turn: DshSessionsRepository.cleanNum(d.turn),
         };
-        const entry: ChatEntryVm = DshSessionsRepository.entry(ChatEntryKind.Tool, seq, time, tool.turn, '', '', 0, 0, '', tool);
+        const entry: ChatEntryVm = DshSessionsRepository.entry(ChatEntryKind.Tool, seq, time, tool.turn, '', '', 0, 0, '', tool, []);
         entries.push(entry);
         if (callId !== '') {
           toolByCallId.set(callId, entry);
@@ -553,7 +616,7 @@ export class DshSessionsRepository {
         const d: WireTurnStartData = data as WireTurnStartData;
         const turn: number = DshSessionsRepository.cleanNum(d.turn);
         entries.push(DshSessionsRepository.entry(ChatEntryKind.Turn, seq, time, turn,
-          '第 ' + turn + ' 轮', '', 0, 0, '', null));
+          '第 ' + turn + ' 轮', '', 0, 0, '', null, []));
       } else if (type === 'turn/end') {
         // 失败轮次没有 assistant/message，错误详情只在 turn/end 的 reason 里——
         // 不解析的话失败在手机端完全不可见（web 端有"本轮运行失败"红条）
@@ -582,7 +645,7 @@ export class DshSessionsRepository {
             text += ' [' + code + ']';
           }
           entries.push(DshSessionsRepository.entry(ChatEntryKind.Error, seq, time, 0,
-            text, '', 0, 0, '', null));
+            text, '', 0, 0, '', null, []));
         }
         if (seq > maxTurnEndSeq) {
           maxTurnEndSeq = seq;
@@ -642,11 +705,19 @@ export class DshSessionsRepository {
 
   /**
    * 创建新会话（延迟创建策略：仅在用户发出第一条消息时调用）。
-   * @param cwd 工作目录；空串表示服务器默认
+   * workspaceId 非空时优先（服务器以工作区 path 为 cwd 并把会话归入该工作区）；
+   * cwd 仅在无 workspaceId 时生效；两者都为空串表示服务器默认目录。
+   * @param workspaceId 工作区 ID（归组凭据，服务端与 cwd 互斥）
+   * @param cwd 工作目录（无工作区时的手动指定）
+   * @param workspacePath 工作区路径（仅用于回显，可传空串）
    */
-  static async createSession(ctx: common.Context, cwd: string): Promise<SessionSummaryVm> {
+  static async createSession(ctx: common.Context, workspaceId: string, cwd: string,
+    workspacePath: string): Promise<SessionSummaryVm> {
     let reqObj: object = EMPTY_DATA;
-    if (cwd !== '') {
+    if (workspaceId !== '') {
+      const req: WireCreateRequest = { workspaceId: workspaceId };
+      reqObj = req;
+    } else if (cwd !== '') {
       const req: WireCreateRequest = { cwd: cwd };
       reqObj = req;
     }
@@ -657,13 +728,44 @@ export class DshSessionsRepository {
       title: '新会话',
       updatedAt: Date.now(),
       running: false,
-      cwd: '',
+      cwd: workspaceId !== '' ? workspacePath : cwd,
       turns: 0,
       lastPrompt: '',
       asOfSeq: -1,
       model: '',
     };
     return s;
+  }
+
+  /**
+   * 按服务器本地路径读取图片文件（session/readImage；服务端限定已注册工作区目录内）。
+   * @param path 服务器上的图片绝对路径
+   */
+  static async readImage(ctx: common.Context, path: string): Promise<ImageDataVm> {
+    const req: WireReadImageRequest = { path: path };
+    const value: object = await DshApiClient.call(ctx, 'session/readImage', 'request', req);
+    const parsed: WireReadImageValue = value as WireReadImageValue;
+    return {
+      mediaType: DshSessionsRepository.cleanStr(parsed.mediaType, 'image/png'),
+      base64: DshSessionsRepository.cleanStr(parsed.data),
+    };
+  }
+
+  /**
+   * 按附件引用读取消息内图片（session/attachment；服务端校验该会话日志引用过此附件）。
+   * @param sessionId 图片所属会话（授权凭据）
+   * @param attachmentId image 块里的附件 ID
+   */
+  static async readAttachment(ctx: common.Context, sessionId: string, attachmentId: string): Promise<ImageDataVm> {
+    const req: WireAttachmentRequest = { sessionId: sessionId, attachmentId: attachmentId };
+    const value: object = await DshApiClient.call(ctx, 'session/attachment', 'request', req);
+    const parsed: WireAttachmentValue = value as WireAttachmentValue;
+    const ref: WireImageAttachment = parsed.attachment !== undefined && parsed.attachment !== null
+      ? parsed.attachment : {};
+    return {
+      mediaType: DshSessionsRepository.cleanStr(ref.mediaType, 'image/png'),
+      base64: DshSessionsRepository.cleanStr(parsed.data),
+    };
   }
 
   /** 拉取模型目录（session/modelCatalog，空 args）。 */
@@ -700,6 +802,41 @@ export class DshSessionsRepository {
       groups: groups,
     };
     return catalog;
+  }
+
+  /**
+   * 拉取 Agent 预设名单（agentPresets/list，空 args；web 端「模式」选择同构）。
+   * broken 行（组合不可用）不进入可选列表。
+   */
+  static async presetRoster(ctx: common.Context): Promise<PresetItemVm[]> {
+    const value: object = await DshApiClient.call(ctx, 'agentPresets/list', '', null);
+    const parsed: WirePresetRoster = value as WirePresetRoster;
+    const rows: WirePresetRow[] = parsed.presets !== undefined && parsed.presets !== null ? parsed.presets : [];
+    const items: PresetItemVm[] = [];
+    for (let i: number = 0; i < rows.length; i++) {
+      const r: WirePresetRow = rows[i];
+      const id: string = DshSessionsRepository.cleanStr(r.id);
+      if (id === '' || DshSessionsRepository.cleanStr(r.broken) !== '') {
+        continue;
+      }
+      const item: PresetItemVm = {
+        id: id,
+        name: DshSessionsRepository.cleanStr(r.name, id),
+        description: DshSessionsRepository.cleanStr(r.description),
+        isDefault: r.isDefault === true,
+      };
+      items.push(item);
+    }
+    return items;
+  }
+
+  /** 为空白会话应用 Agent 预设（agentPresets/select；仅首条消息前可用，之后报 agent-preset/locked）。 */
+  static async presetSelect(ctx: common.Context, sessionId: string, presetId: string): Promise<void> {
+    const req: WirePresetSelectRequest = {
+      agent: sessionId,
+      agentPreset: presetId,
+    };
+    await DshApiClient.call(ctx, 'agentPresets/select', '', req);
   }
 
   /** 为会话切换模型（session/selectModel，实测通过）。 */
@@ -759,7 +896,7 @@ export class DshSessionsRepository {
 
   private static entry(kind: ChatEntryKind, seq: number, time: number, turn: number,
     text: string, reasoning: string, usageIn: number, usageOut: number, model: string,
-    tool: ToolCallVm | null): ChatEntryVm {
+    tool: ToolCallVm | null, images: string[]): ChatEntryVm {
     const e: ChatEntryVm = {
       kind: kind,
       seq: seq,
@@ -771,6 +908,7 @@ export class DshSessionsRepository {
       usageOut: usageOut,
       model: model,
       tool: tool,
+      images: images,
     };
     return e;
   }
@@ -794,6 +932,25 @@ export class DshSessionsRepository {
       }
       if (block.type === wantType && block.text !== undefined && block.text !== null) {
         out += block.text;
+      }
+    }
+    return out;
+  }
+
+  /** 收集 image 块的 attachmentId（保持出现顺序，跳过缺 id 的块）。 */
+  private static collectImageIds(blocks: WireContentBlock[] | undefined | null): string[] {
+    if (blocks === undefined || blocks === null) {
+      return [];
+    }
+    const out: string[] = [];
+    for (let i: number = 0; i < blocks.length; i++) {
+      const block: WireContentBlock | null = blocks[i] !== null ? blocks[i] : null;
+      if (block === null || block.type !== 'image' || block.attachment === undefined || block.attachment === null) {
+        continue;
+      }
+      const id: string = DshSessionsRepository.cleanStr(block.attachment.attachmentId);
+      if (id !== '') {
+        out.push(id);
       }
     }
     return out;

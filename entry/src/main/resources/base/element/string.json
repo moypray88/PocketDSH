@@ -13,6 +13,14 @@
       "value": "PocketDSH"
     },
     {
+      "name": "ReportViewerAbility_desc",
+      "value": "PocketDSH report viewer window"
+    },
+    {
+      "name": "ReportViewerAbility_label",
+      "value": "策略报告"
+    },
+    {
       "name": "internet_reason",
       "value": "连接远程 dsh 服务器需要网络访问权限"
     }

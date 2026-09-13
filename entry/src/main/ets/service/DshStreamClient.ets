@@ -15,8 +15,8 @@ const WS_TAG: string = 'PocketDSH_WS';
 export interface DshStreamListener {
   /** follow 开仓快照：cursor 为当前游标（= session/page 的 throughSeq 上限）。 */
   onSnapshot(cursor: number): void;
-  /** 真人用户消息（source.kind==='user'）。 */
-  onUserMessage(seq: number, time: number, text: string): void;
+  /** 真人用户消息（source.kind==='user'）；images 为消息内图片附件 ID。 */
+  onUserMessage(seq: number, time: number, text: string, images: string[]): void;
   /** 助手流式增量：kind 'text' | 'reasoning'，text 为追加内容。 */
   onLiveDelta(kind: string, text: string): void;
   /** 块结束（block-end）：权威整块内容，view 用它替换增量缓冲。 */
@@ -25,7 +25,7 @@ export interface DshStreamListener {
   onLiveUsage(inputTokens: number, outputTokens: number): void;
   /** 助手消息结算（assistant/message）：终结流式卡，view 按 seq 去重后转正条目。 */
   onAssistantMessage(seq: number, time: number, turn: number, text: string,
-    reasoning: string, usageIn: number, usageOut: number, model: string): void;
+    reasoning: string, usageIn: number, usageOut: number, model: string, images: string[]): void;
   /** 工具调用。 */
   onToolCall(seq: number, time: number, turn: number, callId: string, name: string, args: string): void;
   /** 工具结果（按 callId 配对回填）。 */
@@ -94,6 +94,14 @@ interface WireMuxFrame {
 interface WireBlock {
   type?: string;
   text?: string;
+  /** image 块的附件引用（attachmentId 取图凭据）。 */
+  attachment?: WireStreamAttachment;
+}
+
+/** 流帧里的图片附件引用。 */
+interface WireStreamAttachment {
+  attachmentId?: string;
+  mediaType?: string;
 }
 
 interface WireUsage {
@@ -822,8 +830,9 @@ export class DshStreamClient {
         return;
       }
       const text: string = DshStreamClient.joinBlocks(d.content);
-      if (l !== null && text !== '') {
-        l.onUserMessage(seq, time, text);
+      const images: string[] = DshStreamClient.joinImageIds(d.content);
+      if (l !== null && (text !== '' || images.length > 0)) {
+        l.onUserMessage(seq, time, text, images);
       }
     } else if (type === 'assistant/message') {
       const d: WireAssistantEventData = data as WireAssistantEventData;
@@ -843,7 +852,8 @@ export class DshStreamClient {
         ? src.model : '';
       const turn: number = d.turn !== undefined && d.turn !== null ? d.turn : 0;
       if (l !== null) {
-        l.onAssistantMessage(seq, time, turn, text, reasoning, usageIn, usageOut, model);
+        l.onAssistantMessage(seq, time, turn, text, reasoning, usageIn, usageOut, model,
+          DshStreamClient.joinImageIds(msg.content));
       }
     } else if (type === 'assistant/chunk') {
       const d: WireChunkEventData = data as WireChunkEventData;
@@ -1047,6 +1057,27 @@ export class DshStreamClient {
       }
       if (block.type === 'text' && block.text !== undefined && block.text !== null) {
         out += block.text;
+      }
+    }
+    return out;
+  }
+
+  /** 收集 image 块的 attachmentId（保持出现顺序）。 */
+  private static joinImageIds(blocks: WireBlock[] | undefined | null): string[] {
+    if (blocks === undefined || blocks === null) {
+      return [];
+    }
+    const out: string[] = [];
+    for (let i: number = 0; i < blocks.length; i++) {
+      const block: WireBlock | undefined | null = blocks[i];
+      if (block === undefined || block === null || block.type !== 'image') {
+        continue;
+      }
+      const att: WireStreamAttachment | undefined | null = block.attachment;
+      const id: string = att !== undefined && att !== null && att.attachmentId !== undefined && att.attachmentId !== null
+        ? att.attachmentId : '';
+      if (id !== '') {
+        out.push(id);
       }
     }
     return out;
